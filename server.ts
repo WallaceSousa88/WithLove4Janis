@@ -1,7 +1,12 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
+import fs from "fs";
 import Database from "better-sqlite3";
+import AdmZip from "adm-zip";
+import multer from "multer";
+
+const upload = multer({ dest: "uploads/" });
 
 async function startServer() {
   const app = express();
@@ -9,40 +14,105 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Database initialization
-  const db = new Database("./database.sqlite");
+  const DB_PATH = "./database.sqlite";
+  let db = new Database(DB_PATH);
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS pessoas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nome TEXT NOT NULL,
-      cor TEXT NOT NULL
-    );
+  const initDb = (database: Database.Database) => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS pessoas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT NOT NULL,
+        cor TEXT NOT NULL
+      );
 
-    CREATE TABLE IF NOT EXISTS categorias (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nome TEXT NOT NULL UNIQUE
-    );
+      CREATE TABLE IF NOT EXISTS categorias (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT NOT NULL UNIQUE
+      );
 
-    CREATE TABLE IF NOT EXISTS despesas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      data TEXT NOT NULL,
-      valor REAL NOT NULL,
-      origem_id INTEGER NOT NULL,
-      destino TEXT NOT NULL,
-      categoria_id INTEGER NOT NULL,
-      FOREIGN KEY(origem_id) REFERENCES pessoas(id),
-      FOREIGN KEY(categoria_id) REFERENCES categorias(id)
-    );
+      CREATE TABLE IF NOT EXISTS despesas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data TEXT NOT NULL,
+        valor REAL NOT NULL,
+        descricao TEXT DEFAULT '',
+        origem_id INTEGER NOT NULL,
+        destino TEXT NOT NULL,
+        categoria_id INTEGER NOT NULL,
+        FOREIGN KEY(origem_id) REFERENCES pessoas(id),
+        FOREIGN KEY(categoria_id) REFERENCES categorias(id)
+      );
 
-    CREATE TABLE IF NOT EXISTS salarios (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      data TEXT NOT NULL,
-      valor REAL NOT NULL,
-      recebedor_id INTEGER NOT NULL,
-      FOREIGN KEY(recebedor_id) REFERENCES pessoas(id)
-    );
-  `);
+      CREATE TABLE IF NOT EXISTS salarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data TEXT NOT NULL,
+        valor REAL NOT NULL,
+        descricao TEXT DEFAULT '',
+        recebedor_id INTEGER NOT NULL,
+        FOREIGN KEY(recebedor_id) REFERENCES pessoas(id)
+      );
+    `);
+
+    // Ensure columns exist for existing databases
+    try { database.exec("ALTER TABLE despesas ADD COLUMN descricao TEXT DEFAULT ''"); } catch (e) {}
+    try { database.exec("ALTER TABLE salarios ADD COLUMN descricao TEXT DEFAULT ''"); } catch (e) {}
+  };
+
+  initDb(db);
+
+  // Backup endpoint
+  app.get("/api/backup", (req, res) => {
+    try {
+      const zip = new AdmZip();
+      // Add the sqlite file to the zip
+      zip.addLocalFile(DB_PATH);
+      const buffer = zip.toBuffer();
+      
+      res.set("Content-Type", "application/zip");
+      res.set("Content-Disposition", `attachment; filename=cashtrack_backup_${new Date().toISOString().split('T')[0]}.zip`);
+      res.send(buffer);
+    } catch (e) {
+      res.status(500).json({ error: "Erro ao gerar backup" });
+    }
+  });
+
+  // Restore endpoint
+  app.post("/api/restore", upload.single("backup"), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "Nenhum arquivo enviado" });
+    }
+
+    try {
+      const filePath = req.file.path;
+      const zip = new AdmZip(filePath);
+      const zipEntries = zip.getEntries();
+      
+      // Find the database file in the zip
+      const dbEntry = zipEntries.find(entry => entry.entryName === "database.sqlite");
+      
+      if (!dbEntry) {
+        fs.unlinkSync(filePath);
+        return res.status(400).json({ error: "Arquivo de backup inválido (database.sqlite não encontrado)" });
+      }
+
+      // Close current connection
+      db.close();
+
+      // Extract and replace
+      zip.extractEntryTo(dbEntry, ".", false, true);
+
+      // Reopen connection
+      db = new Database(DB_PATH);
+      initDb(db);
+
+      // Clean up upload
+      fs.unlinkSync(filePath);
+
+      res.json({ success: true });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Erro ao restaurar backup" });
+    }
+  });
 
   // API Routes
   app.get("/api/pessoas", (req, res) => {
@@ -82,11 +152,22 @@ async function startServer() {
   });
 
   app.post("/api/despesas", (req, res) => {
-    const { data, valor, origem_id, destino, categoria_id } = req.body;
+    const { data, valor, descricao, origem_id, destino, categoria_id } = req.body;
+    
+    // Check for duplicate
+    const existing = db.prepare(`
+      SELECT id FROM despesas 
+      WHERE data = ? AND valor = ? AND descricao = ? AND origem_id = ? AND destino = ? AND categoria_id = ?
+    `).get(data, valor, descricao || '', origem_id, destino, categoria_id);
+
+    if (existing) {
+      return res.status(400).json({ error: "Esta despesa já foi lançada (duplicada)." });
+    }
+
     const result = db.prepare(
-      "INSERT INTO despesas (data, valor, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?)"
-    ).run(data, valor, origem_id, destino, categoria_id);
-    res.json({ id: result.lastInsertRowid, data, valor, origem_id, destino, categoria_id });
+      "INSERT INTO despesas (data, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(data, valor, descricao || '', origem_id, destino, categoria_id);
+    res.json({ id: result.lastInsertRowid, data, valor, descricao, origem_id, destino, categoria_id });
   });
 
   app.get("/api/salarios", (req, res) => {
@@ -99,11 +180,42 @@ async function startServer() {
   });
 
   app.post("/api/salarios", (req, res) => {
-    const { data, valor, recebedor_id } = req.body;
+    const { data, valor, descricao, recebedor_id } = req.body;
+
+    // Check for duplicate
+    const existing = db.prepare(`
+      SELECT id FROM salarios 
+      WHERE data = ? AND valor = ? AND descricao = ? AND recebedor_id = ?
+    `).get(data, valor, descricao || '', recebedor_id);
+
+    if (existing) {
+      return res.status(400).json({ error: "Este lançamento de entrada já existe (duplicado)." });
+    }
+
     const result = db.prepare(
-      "INSERT INTO salarios (data, valor, recebedor_id) VALUES (?, ?, ?)"
-    ).run(data, valor, recebedor_id);
-    res.json({ id: result.lastInsertRowid, data, valor, recebedor_id });
+      "INSERT INTO salarios (data, valor, descricao, recebedor_id) VALUES (?, ?, ?, ?)"
+    ).run(data, valor, descricao || '', recebedor_id);
+    res.json({ id: result.lastInsertRowid, data, valor, descricao, recebedor_id });
+  });
+
+  app.delete("/api/pessoas/:id", (req, res) => {
+    const { id } = req.params;
+    
+    const deleteTransaction = db.transaction(() => {
+      // Delete associated expenses
+      db.prepare("DELETE FROM despesas WHERE origem_id = ?").run(id);
+      // Delete associated salaries
+      db.prepare("DELETE FROM salarios WHERE recebedor_id = ?").run(id);
+      // Delete the person
+      db.prepare("DELETE FROM pessoas WHERE id = ?").run(id);
+    });
+
+    try {
+      deleteTransaction();
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: "Erro ao excluir pessoa e seus dados." });
+    }
   });
 
   // Vite middleware for development

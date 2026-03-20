@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Filter, Users, DollarSign, CreditCard, Tag, TrendingUp, ChevronDown } from 'lucide-react';
+import { Plus, Filter, Users, DollarSign, CreditCard, Tag, TrendingUp, ChevronDown, ClipboardCheck, Trash2, Download, Upload, RotateCcw, Layers } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, Sector
@@ -8,6 +8,8 @@ import { format, parseISO, getMonth, getYear, startOfMonth, endOfMonth, eachDayO
 import { ptBR } from 'date-fns/locale';
 import { Pessoa, Categoria, Despesa, Salario, PALETTES } from './types';
 import { Modal } from './components/Modal';
+import { ErrorModal } from './components/ErrorModal';
+import { ConfirmModal } from './components/ConfirmModal';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -30,9 +32,6 @@ const renderActiveShape = (props: any) => {
 
   return (
     <g>
-      <text x={cx} y={cy} dy={8} textAnchor="middle" fill={fill} className="font-bold">
-        {payload.name}
-      </text>
       <Sector
         cx={cx}
         cy={cy}
@@ -58,58 +57,254 @@ const renderActiveShape = (props: any) => {
   );
 };
 
+const SidebarButton = ({ onClick, icon, label, color, hoverBg }: any) => (
+  <button 
+    type="button"
+    onClick={onClick} 
+    className={cn(
+      "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all active:scale-[0.98] hover:shadow-sm hover:scale-[1.01]",
+      color,
+      hoverBg
+    )}
+  >
+    {icon}
+    <span>{label}</span>
+  </button>
+);
+
 export default function App() {
   const [pessoas, setPessoas] = useState<Pessoa[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [despesas, setDespesas] = useState<Despesa[]>([]);
   const [salarios, setSalarios] = useState<Salario[]>([]);
 
-  const [filterMonth, setFilterMonth] = useState<number>(new Date().getMonth());
-  const [filterYear, setFilterYear] = useState<number>(new Date().getFullYear());
+  const [filterMonth, setFilterMonth] = useState<number>(-1);
+  const [filterYear, setFilterYear] = useState<number>(-1);
 
   const [isPessoaModalOpen, setIsPessoaModalOpen] = useState(false);
   const [isDespesaModalOpen, setIsDespesaModalOpen] = useState(false);
   const [isSalarioModalOpen, setIsSalarioModalOpen] = useState(false);
   const [isCategoriaModalOpen, setIsCategoriaModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   const [activePieIndex, setActivePieIndex] = useState(0);
 
   const [isLogModalOpen, setIsLogModalOpen] = useState(false);
+  const [isPersonDetailModalOpen, setIsPersonDetailModalOpen] = useState(false);
+  const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
+  const [isDeletePessoaModalOpen, setIsDeletePessoaModalOpen] = useState(false);
+  const [personToDelete, setPersonToDelete] = useState<Pessoa | null>(null);
+  const [isRestoreConfirmOpen, setIsRestoreConfirmOpen] = useState(false);
+  const [pendingRestoreFile, setPendingRestoreFile] = useState<File | null>(null);
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [reviewItems, setReviewItems] = useState<any[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const PROMPT_CONTA_CORRENTE = `**Tarefa:**
+Extraia do PDF anexado todas as movimentações da conta corrente (entradas e saídas) e gere um arquivo CSV com as colunas:
+\`Data;Descrição;Categoria;Valor;Tipo\`
+
+**Regras de inclusão/exclusão:**
+- **Inclua** todas as movimentações reais (entradas/créditos e saídas/débitos).
+- **Inclua** rendimentos de aplicações automáticas (ex.: "Rend Pago Aplic Aut Mais").
+- **Inclua** estornos, IOF, encargos e tarifas.
+- **Ignore** linhas de saldo anterior, saldo final, totais agregados.
+- **Ignore** lançamentos internos de aplicação/resgate automático:
+  - "Apl Aplic Aut Mais"
+  - "Res Aplic Aut Mais"
+  - "SALDO APLIC AUT MAIS"
+
+**Formatação:**
+- O campo **Valor** deve estar em formato decimal **sem separador de milhar**.
+  - Exemplo correto: \`1250,00\`
+  - Exemplo incorreto: \`1.250,00\`
+- Use **vírgula** para separar decimais (ex.: \`57,02\`).
+- Use **ponto e vírgula (;)** como separador de colunas.
+- Ordene todas as linhas em ordem crescente pela **Data**.
+- A coluna **Tipo** deve indicar \`ENTRADA\` ou \`SAÍDA\`.
+
+**Regras de categorização (coluna "Categoria"):**
+- "IOF", "JUROS LIMITE DA CONTA", "Seguro LIS" → **Taxa Banco**
+- "PRE-PAGO" → **Pré Pago CLARO/VIVO**
+- "Skymidi" → **Entrada Wallace**
+- "Cemig", "CONSORCIO" → **Conta Luz**
+- "ITAU MULTIPL" → **Cartão de Crédito**
+- "Liberio" → **Aluguel**
+- "Janis" → **Acerto Janis**
+- "UBER" → **Transporte**
+- "IFOOD", "IFD" → **Alimentação**
+- "SuperNosso", "MOMENTO SUPE" → **Alimentação**
+- "Food to Save" → **Alimentação**
+- "Amazon" → **Amazon**
+- "Blizzard", "Battle.net" → **Lazer**
+- "Rend", "Rendimento" → **Rendimentos**
+- Caso contrário → **Outros**
+
+**Regras de data:**
+- O ano do extrato é definido pelo cabeçalho do PDF.
+- Movimentações com mês igual ao do extrato → usar ano do extrato.
+- Movimentações com mês anterior → usar ano anterior.
+
+**Validação final:**
+- Compare a soma das entradas e saídas com os totais informados no PDF.
+- Se bater → informe **"Validação OK"**.
+- Se houver diferença → informe **"Validação FALHOU"** e mostre a diferença.
+
+### Exemplo de saída esperada:
+
+\`\`\`
+05/01/2026;IOF;Taxa Banco;17,56;Saída
+05/01/2026;Int PRE-PAGOXXXXX 1990;Pré Pago CLARO/VIVO;25,00;Saída
+05/01/2026;PIX TRANSF SKYMIDI05/01;Entrada Wallace;62,50;Entrada
+06/01/2026;ELCSS-MOMENTO SUP-06/01;Alimentação;171,71;Saída
+07/01/2026;PIX TRANSF SKYMIDI07/01;Entrada Wallace;1250,00;Entrada
+08/01/2026;Fatura Paga ITAU MULTIPL;Cartão de Crédito;915,40;Saída
+08/01/2026;Rend Pago Aplic Aut Mais;Rendimentos;0,01;Entrada
+09/01/2026;PIX TRANSF SKYMIDI09/01;Entrada Wallace;950,00;Entrada
+12/01/2026;PIX QRS CEMIG DISTR12/01;Conta Luz;81,58;Saída
+21/01/2026;PIX TRANSF LIBERIO21/01;Aluguel;1343,00;Saída
+27/01/2026;PIX TRANSF Janis L27/01;Acerto Janis;115,80;Saída
+28/01/2026;Battle.net Blizzard;Lazer;229,03;Saída
+\`\`\``;
+
+  const PROMPT_CARTAO_CREDITO = `**Tarefa:**
+Extraia do PDF anexado todos os lançamentos de compras e saques do cartão de crédito.
+
+**Formato da saída:**
+CSV com colunas:
+\`Data;Descrição;Categoria;Valor;Saída\`
+
+**Regras de extração:**
+- Inclua todos os lançamentos válidos: compras, saques, internacionais, encargos e IOF.
+- Não descarte estornos: registre-os com valor negativo.
+- Ignore apenas linhas de totais por cartão e resumos.
+- O campo **Valor** deve estar em formato decimal com vírgula (ex: \`57,02\`).
+- Use ponto e vírgula (\`;\`) como separador de colunas.
+- Ordene os lançamentos em ordem crescente pela **Data**.
+- A última coluna **Saída** deve sempre conter o texto fixo \`Saída\`.
+
+**Regras de categorização (coluna "Categoria"):**
+- Contém "UBER" → Transporte
+- Contém "IFOOD" ou "IFD" → Alimentação
+- Contém "SuperNosso" ou "MOMENTO SUPE" → Alimentação
+- Contém "Food to Save" → Alimentação
+- Contém "Amazon" → Amazon
+- Contém "Blizzard" ou "Battle.net" → Lazer
+- Contém "IOF" ou "Encargos" → Taxa Banco
+- Caso contrário → Outros
+
+**Regras de data:**
+- O ano da fatura é definido pelo cabeçalho do PDF.
+- Lançamentos with mês igual ao da fatura → ano da fatura.
+- Lançamentos with mês anterior ao da fatura → ano anterior.
+
+**Validação final:**
+- Compare a soma dos valores extraídos com o campo "Total dos lançamentos atuais" do PDF.
+- Se a soma coincidir → informe \`Validação OK\`.
+- Se houver diferença → informe \`Validação FALHOU\` e mostre a diferença.
+
+### Exemplo de saída esperada:
+\`\`\`
+20/11/2025;SuperNosso *EmCas02/02 ALIMENTAÇÃO .CONTAGEM;Alimentação;42,45;Saída
+06/12/2025;IFD*LN COMERCIO DE ALIM ALIMENTAÇÃO .BELO HORIZONT;Alimentação;36,89;Saída
+06/12/2025;AMAZON BR EDUCAÇÃO .SAO PAULO;Amazon;23,51;Saída
+07/12/2025;UBER *TRIP HELP.UBER.CO VEÍCULOS .SAO PAULO;Transporte;30,82;Saída
+25/12/2025;EBN *Battle Net INTERNACIONAL .SAO PAULO;Internacional;174,90;Saída
+28/12/2025;Battle.net Blizzard INTERNACIONAL .SAO PAULO;Internacional;229,03;Saída
+28/12/2025;IOF INTERNACIONAL .SAO PAULO;Taxa Banco;8,00;Saída
+02/01/2026;Food to Save .BELO HORIZONT;Alimentação;19,90;Saída
+\`\`\``;
+
+  const copyToClipboard = (text: string, message: string) => {
+    navigator.clipboard.writeText(text);
+    setToast(message);
+    setTimeout(() => setToast(null), 3000);
+  };
 
   // Form states
   const [newPessoa, setNewPessoa] = useState({ nome: '', cor: '' });
-  const [newDespesa, setNewDespesa] = useState({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', origem_id: '', destino: 'Dividir', categoria_id: '' });
-  const [newSalario, setNewSalario] = useState({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', recebedor_id: '' });
+  const [newDespesa, setNewDespesa] = useState({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', origem_id: '', destino: 'Dividir', categoria_id: '' });
+  const [newSalario, setNewSalario] = useState({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', recebedor_id: '' });
   const [newCategoria, setNewCategoria] = useState({ nome: '' });
+  const [importPessoaId, setImportPessoaId] = useState('');
+  const [logSearchTerm, setLogSearchTerm] = useState('');
+  const [reviewSearchTerm, setReviewSearchTerm] = useState('');
 
   const fetchData = async () => {
-    const [p, c, d, s] = await Promise.all([
-      fetch('/api/pessoas').then(res => res.json()),
-      fetch('/api/categorias').then(res => res.json()),
-      fetch('/api/despesas').then(res => res.json()),
-      fetch('/api/salarios').then(res => res.json()),
-    ]);
-    setPessoas(p);
-    setCategorias(c);
-    setDespesas(d);
-    setSalarios(s);
+    try {
+      const [p, c, d, s] = await Promise.all([
+        fetch('/api/pessoas').then(res => res.json()),
+        fetch('/api/categorias').then(res => res.json()),
+        fetch('/api/despesas').then(res => res.json()),
+        fetch('/api/salarios').then(res => res.json()),
+      ]);
+      setPessoas(p);
+      setCategorias(c);
+      setDespesas(d);
+      setSalarios(s);
+    } catch (err) {
+      setError('Erro ao carregar dados do servidor. Por favor, tente novamente.');
+    }
   };
 
   useEffect(() => {
+    const handleGlobalError = (event: ErrorEvent) => {
+      setError(`Erro inesperado: ${event.message}`);
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      setError(`Erro de rede ou servidor: ${event.reason}`);
+    };
+
+    window.addEventListener('error', handleGlobalError);
+    window.addEventListener('unhandledrejection', handleRejection);
+
     fetchData();
+
+    return () => {
+      window.removeEventListener('error', handleGlobalError);
+      window.removeEventListener('unhandledrejection', handleRejection);
+    };
   }, []);
+
+  const availableYears = useMemo(() => {
+    const years = new Set<number>();
+    despesas.forEach(d => years.add(getYear(parseISO(d.data))));
+    salarios.forEach(s => years.add(getYear(parseISO(s.data))));
+    return Array.from(years).sort((a, b) => b - a);
+  }, [despesas, salarios]);
+
+  const availableMonths = useMemo(() => {
+    const months = new Set<number>();
+    const items = [...despesas, ...salarios];
+    items.forEach(item => {
+      const date = parseISO(item.data);
+      if (filterYear === -1 || getYear(date) === filterYear) {
+        months.add(getMonth(date));
+      }
+    });
+    return Array.from(months).sort((a, b) => a - b);
+  }, [despesas, salarios, filterYear]);
 
   const filteredDespesas = useMemo(() => {
     return despesas.filter(d => {
       const date = parseISO(d.data);
-      return getMonth(date) === filterMonth && getYear(date) === filterYear;
+      const m = getMonth(date);
+      const y = getYear(date);
+      const matchYear = filterYear === -1 || y === filterYear;
+      const matchMonth = filterMonth === -1 || m === filterMonth;
+      return matchYear && matchMonth;
     });
   }, [despesas, filterMonth, filterYear]);
 
   const filteredSalarios = useMemo(() => {
     return salarios.filter(s => {
       const date = parseISO(s.data);
-      return getMonth(date) === filterMonth && getYear(date) === filterYear;
+      const m = getMonth(date);
+      const y = getYear(date);
+      const matchYear = filterYear === -1 || y === filterYear;
+      const matchMonth = filterMonth === -1 || m === filterMonth;
+      return matchYear && matchMonth;
     });
   }, [salarios, filterMonth, filterYear]);
 
@@ -197,29 +392,89 @@ export default function App() {
     });
   }, [pessoas, filteredDespesas, filteredSalarios]);
 
-  const barChartData = useMemo(() => {
-    const days = eachDayOfInterval({
-      start: startOfMonth(new Date(filterYear, filterMonth)),
-      end: endOfMonth(new Date(filterYear, filterMonth))
-    });
+  const selectedPersonDetails = useMemo(() => {
+    if (selectedPersonId === null) return null;
+    const person = pessoas.find(p => p.id === selectedPersonId);
+    if (!person) return null;
 
-    return days.map(day => {
-      const dayStr = format(day, 'yyyy-MM-dd');
-      const dayDespesas = filteredDespesas.filter(d => d.data === dayStr);
-      
-      const data: any = { day: format(day, 'dd') };
+    const pDespesas = filteredDespesas.filter(d => d.origem_id === selectedPersonId);
+    const pSalarios = filteredSalarios.filter(s => s.recebedor_id === selectedPersonId);
+
+    const movements = [
+      ...pDespesas.map(d => ({ ...d, tipo: 'Saída', displayData: d.data })),
+      ...pSalarios.map(s => ({ ...s, tipo: 'Entrada', displayData: s.data }))
+    ].sort((a, b) => b.displayData.localeCompare(a.displayData));
+
+    const totalSpent = pDespesas.reduce((sum, d) => sum + d.valor, 0);
+    const totalSalary = pSalarios.reduce((sum, s) => sum + s.valor, 0);
+
+    return {
+      person,
+      movements,
+      totalSpent,
+      totalSalary,
+      net: totalSalary - totalSpent
+    };
+  }, [selectedPersonId, pessoas, filteredDespesas, filteredSalarios]);
+
+  const barChartData = useMemo(() => {
+    // If specific month and year are selected, show days
+    if (filterMonth !== -1 && filterYear !== -1) {
+      const days = eachDayOfInterval({
+        start: startOfMonth(new Date(filterYear, filterMonth)),
+        end: endOfMonth(new Date(filterYear, filterMonth))
+      });
+
+      return days.map(day => {
+        const dayStr = format(day, 'yyyy-MM-dd');
+        const dayDespesas = filteredDespesas.filter(d => d.data === dayStr);
+        
+        const data: any = { day: format(day, 'dd') };
+        pessoas.forEach(p => {
+          data[p.nome] = dayDespesas
+            .filter(d => d.origem_id === p.id && d.destino !== 'Dividir')
+            .reduce((sum, d) => sum + d.valor, 0);
+        });
+        data['Dividir'] = dayDespesas
+          .filter(d => d.destino === 'Dividir')
+          .reduce((sum, d) => sum + d.valor, 0);
+        
+        return data;
+      });
+    }
+
+    // If only year is selected (Month is "All"), show months
+    if (filterYear !== -1) {
+      return Array.from({ length: 12 }).map((_, m) => {
+        const monthDespesas = filteredDespesas.filter(d => getMonth(parseISO(d.data)) === m);
+        const data: any = { day: format(new Date(filterYear, m), 'MMM', { locale: ptBR }) };
+        pessoas.forEach(p => {
+          data[p.nome] = monthDespesas
+            .filter(d => d.origem_id === p.id && d.destino !== 'Dividir')
+            .reduce((sum, d) => sum + d.valor, 0);
+        });
+        data['Dividir'] = monthDespesas
+          .filter(d => d.destino === 'Dividir')
+          .reduce((sum, d) => sum + d.valor, 0);
+        return data;
+      });
+    }
+
+    // If "All Years" is selected, show years
+    return availableYears.map(y => {
+      const yearDespesas = filteredDespesas.filter(d => getYear(parseISO(d.data)) === y);
+      const data: any = { day: y.toString() };
       pessoas.forEach(p => {
-        data[p.nome] = dayDespesas
+        data[p.nome] = yearDespesas
           .filter(d => d.origem_id === p.id && d.destino !== 'Dividir')
           .reduce((sum, d) => sum + d.valor, 0);
       });
-      data['Dividir'] = dayDespesas
+      data['Dividir'] = yearDespesas
         .filter(d => d.destino === 'Dividir')
         .reduce((sum, d) => sum + d.valor, 0);
-      
       return data;
-    });
-  }, [pessoas, filteredDespesas, filterMonth, filterYear]);
+    }).reverse(); // Show chronological order
+  }, [pessoas, filteredDespesas, filterMonth, filterYear, availableYears]);
 
   const pieChartData = useMemo(() => {
     const catTotals = categorias.map(c => {
@@ -232,52 +487,195 @@ export default function App() {
     return catTotals;
   }, [categorias, filteredDespesas]);
 
+  const allMovements = useMemo(() => {
+    const mDespesas = despesas.map(d => {
+      let destinoLabel = d.destino;
+      if (d.destino !== 'Dividir') {
+        const p = pessoas.find(p => p.id.toString() === d.destino);
+        destinoLabel = p ? p.nome : d.destino;
+      }
+      return {
+        id: `d-${d.id}`,
+        data: d.data,
+        descricao: d.descricao || 'Despesa',
+        categoria: d.categoria_nome || '-',
+        valor: d.valor,
+        tipo: 'Saída',
+        pessoa: d.origem_nome || '-',
+        destino: destinoLabel,
+        raw: d
+      };
+    });
+
+    const mSalarios = salarios.map(s => ({
+      id: `s-${s.id}`,
+      data: s.data,
+      descricao: s.descricao || 'Salário',
+      categoria: 'Salário',
+      valor: s.valor,
+      tipo: 'Entrada',
+      pessoa: '-',
+      destino: s.recebedor_nome || '-',
+      raw: s
+    }));
+
+    return [...mDespesas, ...mSalarios].sort((a, b) => b.data.localeCompare(a.data));
+  }, [despesas, salarios, pessoas]);
+
+  const filteredMovements = useMemo(() => {
+    if (!logSearchTerm) return allMovements;
+    
+    const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const term = normalize(logSearchTerm);
+    
+    return allMovements.filter(m => {
+      const formattedDate = format(parseISO(m.data), 'dd/MM/yyyy');
+      return (
+        m.data.includes(term) ||
+        formattedDate.includes(term) ||
+        normalize(m.descricao).includes(term) ||
+        normalize(m.categoria).includes(term) ||
+        m.valor.toString().includes(term) ||
+        normalize(m.tipo).includes(term) ||
+        normalize(m.pessoa).includes(term) ||
+        normalize(m.destino).includes(term)
+      );
+    });
+  }, [allMovements, logSearchTerm]);
+
   const handleAddPessoa = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch('/api/pessoas', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newPessoa),
-    });
-    setNewPessoa({ nome: '', cor: '' });
-    setIsPessoaModalOpen(false);
-    fetchData();
+    try {
+      const res = await fetch('/api/pessoas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newPessoa),
+      });
+      if (!res.ok) throw new Error('Falha ao salvar pessoa');
+      setNewPessoa({ nome: '', cor: '' });
+      setIsPessoaModalOpen(false);
+      fetchData();
+    } catch (err) {
+      setError('Erro ao adicionar pessoa. Verifique os dados e tente novamente.');
+    }
   };
 
   const handleAddDespesa = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch('/api/despesas', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newDespesa, valor: parseFloat(newDespesa.valor), origem_id: parseInt(newDespesa.origem_id), categoria_id: parseInt(newDespesa.categoria_id) }),
-    });
-    setNewDespesa({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', origem_id: '', destino: 'Dividir', categoria_id: '' });
-    setIsDespesaModalOpen(false);
-    fetchData();
+    try {
+      const res = await fetch('/api/despesas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          ...newDespesa, 
+          valor: parseFloat(newDespesa.valor), 
+          origem_id: parseInt(newDespesa.origem_id), 
+          categoria_id: parseInt(newDespesa.categoria_id) 
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Falha ao salvar despesa');
+      }
+      setNewDespesa({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', origem_id: '', destino: 'Dividir', categoria_id: '' });
+      setIsDespesaModalOpen(false);
+      fetchData();
+    } catch (err: any) {
+      setError(err.message || 'Erro ao adicionar despesa. Verifique os campos obrigatórios.');
+    }
   };
 
   const handleAddSalario = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch('/api/salarios', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newSalario, valor: parseFloat(newSalario.valor), recebedor_id: parseInt(newSalario.recebedor_id) }),
-    });
-    setNewSalario({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', recebedor_id: '' });
-    setIsSalarioModalOpen(false);
-    fetchData();
+    try {
+      const res = await fetch('/api/salarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          ...newSalario, 
+          valor: parseFloat(newSalario.valor), 
+          recebedor_id: parseInt(newSalario.recebedor_id) 
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Falha ao salvar salário');
+      }
+      setNewSalario({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', recebedor_id: '' });
+      setIsSalarioModalOpen(false);
+      fetchData();
+    } catch (err: any) {
+      setError(err.message || 'Erro ao adicionar salário. Verifique os campos.');
+    }
   };
 
   const handleAddCategoria = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch('/api/categorias', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newCategoria),
-    });
-    setNewCategoria({ nome: '' });
-    setIsCategoriaModalOpen(false);
-    fetchData();
+    try {
+      const res = await fetch('/api/categorias', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newCategoria),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Falha ao salvar categoria');
+      }
+      setNewCategoria({ nome: '' });
+      setIsCategoriaModalOpen(false);
+      fetchData();
+    } catch (err: any) {
+      setError(err.message || 'Erro ao adicionar categoria.');
+    }
+  };
+
+  const handleDeletePessoa = async () => {
+    if (!personToDelete) return;
+    try {
+      const res = await fetch(`/api/pessoas/${personToDelete.id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Falha ao excluir pessoa');
+      setIsDeletePessoaModalOpen(false);
+      setPersonToDelete(null);
+      setToast('Pessoa e transações excluídas com sucesso!');
+      setTimeout(() => setToast(null), 3000);
+      fetchData();
+    } catch (err) {
+      setError('Erro ao excluir pessoa. Tente novamente.');
+    }
+  };
+
+  const handleDownloadBackup = () => {
+    window.location.href = '/api/backup';
+  };
+
+  const handleRestoreBackup = async () => {
+    if (!pendingRestoreFile) return;
+    
+    const formData = new FormData();
+    formData.append('backup', pendingRestoreFile);
+
+    try {
+      const res = await fetch('/api/restore', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Erro ao restaurar backup');
+      }
+
+      setIsRestoreConfirmOpen(false);
+      setPendingRestoreFile(null);
+      setToast('Backup restaurado com sucesso! Recarregando...');
+      setTimeout(() => window.location.reload(), 2000);
+    } catch (err: any) {
+      setError(err.message);
+      setIsRestoreConfirmOpen(false);
+      setPendingRestoreFile(null);
+    }
   };
 
   const getNextAvailableColor = () => {
@@ -296,56 +694,277 @@ export default function App() {
     }
   }, [isPessoaModalOpen]);
 
-  return (
-    <div className="mx-auto w-[95%] max-w-7xl py-8">
-      <header className="mb-8 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-        <h1 className="text-3xl font-bold text-gray-800">Controle Financeiro</h1>
-        
-        <div className="flex flex-wrap gap-3">
-          <button onClick={() => setIsPessoaModalOpen(true)} className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-white shadow-soft hover:bg-indigo-700 transition-colors">
-            <Users size={18} /> Adicionar Pessoa
-          </button>
-          <button onClick={() => setIsDespesaModalOpen(true)} className="flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-white shadow-soft hover:bg-rose-700 transition-colors">
-            <CreditCard size={18} /> Adicionar Despesa
-          </button>
-          <button onClick={() => setIsSalarioModalOpen(true)} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-white shadow-soft hover:bg-emerald-700 transition-colors">
-            <DollarSign size={18} /> Adicionar Salário
-          </button>
-          <button onClick={() => setIsCategoriaModalOpen(true)} className="flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-2 text-white shadow-soft hover:bg-amber-700 transition-colors">
-            <Tag size={18} /> Adicionar Categoria
-          </button>
-          <button onClick={() => setIsLogModalOpen(true)} className="flex items-center gap-2 rounded-xl bg-gray-600 px-4 py-2 text-white shadow-soft hover:bg-gray-700 transition-colors">
-            <TrendingUp size={18} /> Log de Atividades
-          </button>
-        </div>
-      </header>
+  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !importPessoaId) return;
 
-      <div className="mb-8 flex items-center gap-4 rounded-2xl bg-white p-4 shadow-soft border-soft">
-        <Filter className="text-gray-400" size={20} />
-        <select 
-          value={filterMonth} 
-          onChange={(e) => setFilterMonth(parseInt(e.target.value))}
-          className="rounded-lg border-gray-200 bg-gray-50 px-3 py-1 outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          {Array.from({ length: 12 }).map((_, i) => (
-            <option key={i} value={i}>
-              {format(new Date(2024, i), 'MMMM', { locale: ptBR })}
-            </option>
-          ))}
-        </select>
-        <select 
-          value={filterYear} 
-          onChange={(e) => setFilterYear(parseInt(e.target.value))}
-          className="rounded-lg border-gray-200 bg-gray-50 px-3 py-1 outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          {[2023, 2024, 2025, 2026].map(y => (
-            <option key={y} value={y}>{y}</option>
-          ))}
-        </select>
-      </div>
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      const lines = text.split('\n').filter(line => line.trim() !== '');
+      const startIdx = lines[0].toLowerCase().includes('data') ? 1 : 0;
+
+      const items: any[] = [];
+      for (let i = startIdx; i < lines.length; i++) {
+        const parts = lines[i].split(';');
+        if (parts.length < 5) continue;
+        
+        const [dataStr, descricao, categoriaNome, valorStr, tipo] = parts;
+        if (!dataStr || !valorStr || !tipo) continue;
+
+        const dateParts = dataStr.split('/');
+        if (dateParts.length !== 3) continue;
+        const [day, month, year] = dateParts;
+        const formattedDate = `${year}-${month}-${day}`;
+
+        const valor = parseFloat(valorStr.replace(',', '.'));
+        if (isNaN(valor)) continue;
+
+        items.push({
+          id: Math.random().toString(36).substr(2, 9),
+          data: formattedDate,
+          descricao: descricao.trim(),
+          categoria: categoriaNome.trim(),
+          valor,
+          tipo: tipo.trim().toLowerCase() === 'entrada' ? 'Entrada' : 'Saída',
+          destino: tipo.trim().toLowerCase() === 'entrada' ? importPessoaId : '' // Entradas are for the person, Saídas need review
+        });
+      }
+      setReviewItems(items);
+      setIsImportModalOpen(false);
+      setIsReviewModalOpen(true);
+      // Reset input
+      e.target.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  const handleConfirmImport = async () => {
+    const hasEmptyDestino = reviewItems.some(item => item.tipo === 'Saída' && !item.destino);
+    if (hasEmptyDestino) {
+      setError('Por favor, selecione o destino para todas as despesas.');
+      return;
+    }
+
+    try {
+      // Process all items
+      for (const item of reviewItems) {
+        // Handle Category creation if needed
+        let categoriaId: number | null = null;
+        const existingCat = categorias.find(c => c.nome.toLowerCase() === item.categoria.toLowerCase());
+        
+        if (existingCat) {
+          categoriaId = existingCat.id;
+        } else {
+          const res = await fetch('/api/categorias', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome: item.categoria }),
+          });
+          const data = await res.json();
+          if (data.id) {
+            categoriaId = data.id;
+            // Update local state to avoid duplicate creation
+            setCategorias(prev => [...prev, { id: data.id, nome: item.categoria }]);
+          }
+        }
+
+        if (item.tipo === 'Entrada') {
+          const res = await fetch('/api/salarios', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              data: item.data,
+              valor: item.valor,
+              descricao: item.descricao,
+              recebedor_id: parseInt(importPessoaId)
+            }),
+          });
+          if (!res.ok) {
+            const data = await res.json();
+            if (res.status === 400 && data.error?.includes('duplicado')) {
+              continue; // Skip duplicates during bulk import
+            }
+            throw new Error(data.error || 'Erro ao salvar entrada');
+          }
+        } else {
+          if (categoriaId) {
+            const res = await fetch('/api/despesas', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                data: item.data,
+                valor: item.valor,
+                descricao: item.descricao,
+                origem_id: parseInt(importPessoaId),
+                destino: item.destino,
+                categoria_id: categoriaId
+              }),
+            });
+            if (!res.ok) {
+              const data = await res.json();
+              if (res.status === 400 && data.error?.includes('duplicada')) {
+                continue; // Skip duplicates during bulk import
+              }
+              throw new Error(data.error || 'Erro ao salvar despesa');
+            }
+          }
+        }
+      }
+      setIsReviewModalOpen(false);
+      setReviewItems([]);
+      setImportPessoaId('');
+      setToast('Importação concluída com sucesso!');
+      setTimeout(() => setToast(null), 3000);
+      fetchData();
+    } catch (err) {
+      setError('Erro durante a importação. Algumas transações podem não ter sido salvas.');
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen bg-gray-50">
+      {/* Sidebar */}
+      <aside className="w-72 bg-white border-r border-gray-200 fixed h-full overflow-y-auto z-30 shadow-sm">
+        <div className="p-6">
+          <div className="flex items-center gap-3 mb-10">
+            <div className="bg-indigo-600 p-2 rounded-xl text-white">
+              <DollarSign size={24} />
+            </div>
+            <h1 className="text-xl font-bold text-gray-800 tracking-tight">CashTrack</h1>
+          </div>
+          
+          <nav className="space-y-1">
+            <SidebarButton 
+              onClick={() => setIsPessoaModalOpen(true)} 
+              icon={<Users size={20} />} 
+              label="Adicionar Pessoa" 
+              color="text-indigo-600"
+              hoverBg="hover:bg-indigo-100"
+            />
+            <SidebarButton 
+              onClick={() => setIsCategoriaModalOpen(true)} 
+              icon={<Tag size={20} />} 
+              label="Adicionar Categoria" 
+              color="text-amber-600"
+              hoverBg="hover:bg-amber-100"
+            />
+            <SidebarButton 
+              onClick={() => setIsSalarioModalOpen(true)} 
+              icon={<DollarSign size={20} />} 
+              label="Adicionar Entrada" 
+              color="text-emerald-600"
+              hoverBg="hover:bg-emerald-100"
+            />
+            <SidebarButton 
+              onClick={() => setIsDespesaModalOpen(true)} 
+              icon={<CreditCard size={20} />} 
+              label="Adicionar Despesa" 
+              color="text-rose-600"
+              hoverBg="hover:bg-rose-100"
+            />
+            <SidebarButton 
+              onClick={() => setIsImportModalOpen(true)} 
+              icon={<Plus size={20} />} 
+              label="Importar CSV" 
+              color="text-blue-600"
+              hoverBg="hover:bg-blue-100"
+            />
+            
+            <div className="pt-6 pb-2">
+              <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">Prompts Itau</p>
+            </div>
+            
+            <SidebarButton 
+              onClick={() => copyToClipboard(PROMPT_CONTA_CORRENTE, 'Prompt Conta Corrente copiado!')} 
+              icon={<ClipboardCheck size={20} />} 
+              label="Prompt Conta Corrente" 
+              color="text-purple-600"
+              hoverBg="hover:bg-purple-100"
+            />
+            <SidebarButton 
+              onClick={() => copyToClipboard(PROMPT_CARTAO_CREDITO, 'Prompt Cartão de Crédito copiado!')} 
+              icon={<ClipboardCheck size={20} />} 
+              label="Prompt Cartao Credito" 
+              color="text-pink-600"
+              hoverBg="hover:bg-pink-100"
+            />
+            
+            <div className="pt-6 pb-2">
+              <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">Sistema</p>
+            </div>
+            
+            <SidebarButton 
+              onClick={() => setIsLogModalOpen(true)} 
+              icon={<TrendingUp size={20} />} 
+              label="Log" 
+              color="text-gray-600"
+              hoverBg="hover:bg-gray-100"
+            />
+          </nav>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 ml-72 p-8">
+        <div className="max-w-6xl mx-auto">
+          <header className="mb-8 relative flex items-center justify-center min-h-[48px]">
+            <div className="flex items-center gap-4 rounded-2xl bg-white p-2 px-4 shadow-soft border-soft">
+              <Filter className="text-gray-400" size={18} />
+              <select 
+                value={filterMonth} 
+                onChange={(e) => setFilterMonth(parseInt(e.target.value))}
+                className="rounded-lg border-none bg-transparent px-2 py-1 outline-none text-sm font-medium text-gray-700 focus:ring-0"
+              >
+                <option value={-1}>Todos os Meses</option>
+                {availableMonths.map((m) => (
+                  <option key={m} value={m}>
+                    {format(new Date(2024, m), 'MMMM', { locale: ptBR })}
+                  </option>
+                ))}
+              </select>
+              <div className="w-px h-4 bg-gray-200"></div>
+              <select 
+                value={filterYear} 
+                onChange={(e) => setFilterYear(parseInt(e.target.value))}
+                className="rounded-lg border-none bg-transparent px-2 py-1 outline-none text-sm font-medium text-gray-700 focus:ring-0"
+              >
+                <option value={-1}>Todos os Anos</option>
+                {availableYears.map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="absolute right-0 flex items-center gap-2">
+              <button
+                onClick={handleDownloadBackup}
+                className="p-2 rounded-xl bg-white shadow-soft border-soft text-gray-600 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
+                title="Baixar Backup (.zip)"
+              >
+                <Download size={20} />
+              </button>
+              <label className="cursor-pointer p-2 rounded-xl bg-white shadow-soft border-soft text-gray-600 hover:text-emerald-600 hover:bg-emerald-50 transition-all" title="Restaurar Backup (.zip)">
+                <Upload size={20} />
+                <input
+                  type="file"
+                  accept=".zip"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setPendingRestoreFile(file);
+                      setIsRestoreConfirmOpen(true);
+                    }
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+          </header>
 
       {/* Yellow Balance Card */}
-      <div className="mb-8 rounded-2xl bg-yellow-100 p-6 shadow-soft border-2 border-yellow-200">
+      <div className="mb-8 w-full lg:w-2/3 mx-auto rounded-2xl bg-yellow-100 p-6 shadow-soft border-2 border-yellow-200">
         <div className="mb-4 flex items-center gap-2 text-yellow-800">
           <TrendingUp size={24} />
           <h2 className="text-xl font-bold">Ajustes de Saldo</h2>
@@ -364,9 +983,34 @@ export default function App() {
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
         {/* Person Cards */}
         {personStats.map(p => (
-          <div key={p.id} className="rounded-2xl bg-white p-6 shadow-soft border-soft overflow-hidden relative">
+          <div 
+            key={p.id} 
+            onClick={() => {
+              setSelectedPersonId(p.id);
+              setIsPersonDetailModalOpen(true);
+            }}
+            className="rounded-2xl bg-white p-6 shadow-soft border-soft overflow-hidden relative cursor-pointer hover:shadow-lg hover:scale-[1.02] transition-all group"
+            style={{ '--hover-bg': `${p.cor}15` } as any}
+          >
+            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: `${p.cor}15` }}></div>
             <div className="absolute top-0 left-0 w-full h-2" style={{ backgroundColor: p.cor }}></div>
-            <h3 className="mb-4 text-xl font-bold" style={{ color: p.cor }}>{p.nome}</h3>
+            <div className="flex justify-between items-start mb-4">
+              <h3 className="text-xl font-bold" style={{ color: p.cor }}>{p.nome}</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPersonToDelete(p);
+                    setIsDeletePessoaModalOpen(true);
+                  }}
+                  className="p-1 text-gray-300 hover:text-rose-500 transition-colors"
+                  title="Excluir Pessoa"
+                >
+                  <Trash2 size={18} />
+                </button>
+                <ChevronDown size={18} className="text-gray-300 group-hover:text-gray-500 transition-colors" />
+              </div>
+            </div>
             <div className="space-y-3">
               <div className="flex justify-between items-center">
                 <span className="text-gray-500">Total Gasto:</span>
@@ -462,7 +1106,7 @@ export default function App() {
               ))}
             </div>
           </div>
-          <button type="submit" className="w-full rounded-xl bg-indigo-600 py-3 text-white font-bold shadow-soft hover:bg-indigo-700">
+          <button type="submit" className="w-full rounded-xl bg-indigo-600 py-3 text-white font-bold shadow-soft hover:bg-indigo-700 hover:shadow-lg hover:scale-[1.02] transition-all active:scale-[0.98]">
             Salvar
           </button>
         </form>
@@ -492,6 +1136,16 @@ export default function App() {
                 className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Descrição</label>
+            <input 
+              type="text" 
+              value={newDespesa.descricao}
+              onChange={e => setNewDespesa(prev => ({ ...prev, descricao: e.target.value }))}
+              placeholder="Ex: Aluguel, Supermercado..."
+              className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+            />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">Origem (Quem pagou)</label>
@@ -535,7 +1189,7 @@ export default function App() {
               ))}
             </select>
           </div>
-          <button type="submit" className="w-full rounded-xl bg-rose-600 py-3 text-white font-bold shadow-soft hover:bg-rose-700">
+          <button type="submit" className="w-full rounded-xl bg-rose-600 py-3 text-white font-bold shadow-soft hover:bg-rose-700 hover:shadow-lg hover:scale-[1.02] transition-all active:scale-[0.98]">
             Salvar
           </button>
         </form>
@@ -567,6 +1221,16 @@ export default function App() {
             </div>
           </div>
           <div>
+            <label className="block text-sm font-medium text-gray-700">Descrição</label>
+            <input 
+              type="text" 
+              value={newSalario.descricao}
+              onChange={e => setNewSalario(prev => ({ ...prev, descricao: e.target.value }))}
+              placeholder="Ex: Salário Mensal, Bônus..."
+              className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-700">Recebedor</label>
             <select 
               required
@@ -580,7 +1244,7 @@ export default function App() {
               ))}
             </select>
           </div>
-          <button type="submit" className="w-full rounded-xl bg-emerald-600 py-3 text-white font-bold shadow-soft hover:bg-emerald-700">
+          <button type="submit" className="w-full rounded-xl bg-emerald-600 py-3 text-white font-bold shadow-soft hover:bg-emerald-700 hover:shadow-lg hover:scale-[1.02] transition-all active:scale-[0.98]">
             Salvar
           </button>
         </form>
@@ -598,54 +1262,408 @@ export default function App() {
               className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>
-          <button type="submit" className="w-full rounded-xl bg-amber-600 py-3 text-white font-bold shadow-soft hover:bg-amber-700">
+          <button type="submit" className="w-full rounded-xl bg-amber-600 py-3 text-white font-bold shadow-soft hover:bg-amber-700 hover:shadow-lg hover:scale-[1.02] transition-all active:scale-[0.98]">
             Salvar
           </button>
         </form>
       </Modal>
 
-      <Modal isOpen={isLogModalOpen} onClose={() => setIsLogModalOpen(false)} title="Log de Atividades">
-        <div className="max-h-[60vh] overflow-y-auto space-y-4 pr-2">
-          <div className="space-y-2">
-            <h3 className="font-bold text-gray-800 border-b pb-1">Despesas Recentes</h3>
-            {filteredDespesas.length > 0 ? (
-              filteredDespesas.sort((a, b) => b.data.localeCompare(a.data)).map(d => (
-                <div key={d.id} className="text-sm p-2 bg-gray-50 rounded-lg border border-gray-100">
-                  <div className="flex justify-between font-medium">
-                    <span>{d.origem_nome} → {d.destino === 'Dividir' ? 'Todos' : (pessoas.find(p => p.id.toString() === d.destino)?.nome || 'Outro')}</span>
-                    <span className="text-rose-600">R$ {d.valor.toFixed(2)}</span>
-                  </div>
-                  <div className="text-xs text-gray-500 flex justify-between mt-1">
-                    <span>{d.categoria_nome}</span>
-                    <span>{format(parseISO(d.data), 'dd/MM/yyyy')}</span>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-gray-500 italic">Nenhuma despesa neste período.</p>
-            )}
+      <Modal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} title="Importar CSV">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Pessoa de Referência</label>
+            <select 
+              required
+              value={importPessoaId}
+              onChange={e => setImportPessoaId(e.target.value)}
+              className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">Selecione...</option>
+              {pessoas.map(p => (
+                <option key={p.id} value={p.id}>{p.nome}</option>
+              ))}
+            </select>
           </div>
-
-          <div className="space-y-2 pt-4">
-            <h3 className="font-bold text-gray-800 border-b pb-1">Salários Recentes</h3>
-            {filteredSalarios.length > 0 ? (
-              filteredSalarios.sort((a, b) => b.data.localeCompare(a.data)).map(s => (
-                <div key={s.id} className="text-sm p-2 bg-emerald-50 rounded-lg border border-emerald-100">
-                  <div className="flex justify-between font-medium">
-                    <span>{s.recebedor_nome}</span>
-                    <span className="text-emerald-600">R$ {s.valor.toFixed(2)}</span>
-                  </div>
-                  <div className="text-xs text-gray-500 text-right mt-1">
-                    {format(parseISO(s.data), 'dd/MM/yyyy')}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-gray-500 italic">Nenhum salário neste período.</p>
-            )}
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Arquivo CSV</label>
+            <input 
+              type="file" 
+              accept=".csv"
+              disabled={!importPessoaId}
+              onChange={handleImportCSV}
+              className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+            />
+            <p className="mt-2 text-xs text-gray-500">
+              Formato: Data;Descrição;Categoria;Valor;Tipo (Entrada ou Saída)<br/>
+              Ex: 05/01/2026;IOF;Taxa Banco;17,56;Saída
+            </p>
           </div>
         </div>
       </Modal>
+
+      <Modal isOpen={isLogModalOpen} onClose={() => setIsLogModalOpen(false)} title="Log de Atividades">
+        <div className="space-y-4">
+          <div className="sticky top-[-24px] z-20 bg-white pb-4 pt-2 -mx-6 px-6 border-b border-gray-50">
+            <div className="relative">
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input 
+                type="text" 
+                placeholder="Buscar em qualquer coluna..."
+                value={logSearchTerm}
+                onChange={e => setLogSearchTerm(e.target.value)}
+                className="w-full rounded-xl border-gray-200 bg-gray-50 py-2 pl-10 pr-4 outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-gray-100 overflow-hidden">
+            <table className="w-full text-left text-sm">
+              <thead className="sticky top-[48px] bg-gray-100 text-gray-600 z-10">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Data</th>
+                  <th className="px-4 py-3 font-semibold">Descrição</th>
+                  <th className="px-4 py-3 font-semibold">Categoria</th>
+                  <th className="px-4 py-3 font-semibold">Valor</th>
+                  <th className="px-4 py-3 font-semibold">Tipo</th>
+                  <th className="px-4 py-3 font-semibold">Pessoa</th>
+                  <th className="px-4 py-3 font-semibold">Destino</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50 bg-white">
+                {filteredMovements.length > 0 ? (
+                  filteredMovements.map(m => (
+                    <tr key={m.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-4 py-3 whitespace-nowrap">{format(parseISO(m.data), 'dd/MM/yyyy')}</td>
+                      <td className="px-4 py-3">{m.descricao}</td>
+                      <td className="px-4 py-3">
+                        <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
+                          {m.categoria}
+                        </span>
+                      </td>
+                      <td className={cn(
+                        "px-4 py-3 font-medium whitespace-nowrap",
+                        m.tipo === 'Entrada' ? "text-emerald-600" : "text-rose-600"
+                      )}>
+                        R$ {m.valor.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={cn(
+                          "rounded-full px-2 py-1 text-xs font-medium",
+                          m.tipo === 'Entrada' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                        )}>
+                          {m.tipo}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">{m.pessoa}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span className="text-gray-500 italic">{m.destino}</span>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 italic">
+                      Nenhuma movimentação encontrada.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={isPersonDetailModalOpen} 
+        onClose={() => {
+          setIsPersonDetailModalOpen(false);
+          setSelectedPersonId(null);
+        }} 
+        title={`Resumo: ${selectedPersonDetails?.person.nome || ''}`}
+      >
+        {selectedPersonDetails && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="rounded-xl bg-emerald-50 p-4 border border-emerald-100">
+                <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wider mb-1">Entradas</p>
+                <p className="text-xl font-bold text-emerald-700">R$ {selectedPersonDetails.totalSalary.toFixed(2)}</p>
+              </div>
+              <div className="rounded-xl bg-rose-50 p-4 border border-rose-100">
+                <p className="text-xs font-semibold text-rose-600 uppercase tracking-wider mb-1">Saídas</p>
+                <p className="text-xl font-bold text-rose-700">R$ {selectedPersonDetails.totalSpent.toFixed(2)}</p>
+              </div>
+              <div className={cn(
+                "rounded-xl p-4 border",
+                selectedPersonDetails.net >= 0 ? "bg-blue-50 border-blue-100" : "bg-amber-50 border-amber-100"
+              )}>
+                <p className={cn(
+                  "text-xs font-semibold uppercase tracking-wider mb-1",
+                  selectedPersonDetails.net >= 0 ? "text-blue-600" : "text-amber-600"
+                )}>Saldo Líquido</p>
+                <p className={cn(
+                  "text-xl font-bold",
+                  selectedPersonDetails.net >= 0 ? "text-blue-700" : "text-amber-700"
+                )}>R$ {selectedPersonDetails.net.toFixed(2)}</p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-100 overflow-hidden">
+              <div className="max-h-[400px] overflow-y-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="sticky top-0 bg-gray-100 text-gray-600 z-10">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">Data</th>
+                      <th className="px-4 py-3 font-semibold">Descrição</th>
+                      <th className="px-4 py-3 font-semibold">Valor</th>
+                      <th className="px-4 py-3 font-semibold">Tipo</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50 bg-white">
+                    {selectedPersonDetails.movements.length > 0 ? (
+                      selectedPersonDetails.movements.map((m: any, idx: number) => (
+                        <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-4 py-3 whitespace-nowrap">{format(parseISO(m.displayData), 'dd/MM/yyyy')}</td>
+                          <td className="px-4 py-3">
+                            <div className="font-medium">{m.descricao}</div>
+                            {m.categoria_nome && (
+                              <div className="text-xs text-gray-400">{m.categoria_nome}</div>
+                            )}
+                          </td>
+                          <td className={cn(
+                            "px-4 py-3 font-medium whitespace-nowrap",
+                            m.tipo === 'Entrada' ? "text-emerald-600" : "text-rose-600"
+                          )}>
+                            R$ {m.valor.toFixed(2)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={cn(
+                              "rounded-full px-2 py-1 text-xs font-medium",
+                              m.tipo === 'Entrada' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                            )}>
+                              {m.tipo}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-8 text-center text-gray-500 italic">
+                          Nenhuma movimentação este mês.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal isOpen={isReviewModalOpen} onClose={() => setIsReviewModalOpen(false)} title="Revisar Importação">
+        <div className="flex flex-col h-full space-y-4">
+          <div className="sticky top-[-24px] z-20 bg-white/95 backdrop-blur-sm pb-4 pt-2 -mx-6 px-6 border-b border-gray-50 space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-sm text-gray-600">
+                Revise as transações abaixo e selecione o <strong>Destino</strong> para cada despesa.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const newItems = reviewItems.map(item => ({
+                      ...item,
+                      destino: item.tipo === 'Saída' ? 'Dividir' : item.destino
+                    }));
+                    setReviewItems(newItems);
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-100 transition-all active:scale-95"
+                  title="Marcar todas as saídas como 'Dividir'"
+                >
+                  <Layers size={14} />
+                  Dividir Todos
+                </button>
+                <button
+                  onClick={() => {
+                    const newItems = reviewItems.map(item => ({
+                      ...item,
+                      destino: item.tipo === 'Saída' ? '' : item.destino
+                    }));
+                    setReviewItems(newItems);
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg bg-gray-50 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-100 transition-all active:scale-95"
+                  title="Limpar todos os destinos selecionados"
+                >
+                  <RotateCcw size={14} />
+                  Limpar
+                </button>
+              </div>
+            </div>
+
+            <div className="relative">
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+              <input 
+                type="text" 
+                placeholder="Filtrar itens da importação..."
+                value={reviewSearchTerm}
+                onChange={e => setReviewSearchTerm(e.target.value)}
+                className="w-full rounded-xl border-gray-200 bg-gray-50 py-1.5 pl-9 pr-4 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+          
+          <div className="flex-1 overflow-auto rounded-xl border border-gray-100">
+            <table className="w-full text-left text-sm">
+              <thead className="sticky top-[88px] bg-gray-100 text-gray-600 z-10">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Data</th>
+                  <th className="px-4 py-3 font-semibold">Descrição</th>
+                  <th className="px-4 py-3 font-semibold">Categoria</th>
+                  <th className="px-4 py-3 font-semibold">Valor</th>
+                  <th className="px-4 py-3 font-semibold">Tipo</th>
+                  <th className="px-4 py-3 font-semibold">Destino</th>
+                  <th className="px-4 py-3 font-semibold w-10"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50 bg-white">
+                {reviewItems
+                  .filter(item => {
+                    if (!reviewSearchTerm) return true;
+                    const term = reviewSearchTerm.toLowerCase();
+                    const formattedDate = format(parseISO(item.data), 'dd/MM/yyyy');
+                    return (
+                      item.descricao.toLowerCase().includes(term) ||
+                      item.categoria.toLowerCase().includes(term) ||
+                      item.valor.toString().includes(term) ||
+                      item.tipo.toLowerCase().includes(term) ||
+                      formattedDate.includes(term)
+                    );
+                  })
+                  .map((item, idx) => (
+                    <tr key={item.id} className="hover:bg-gray-50 transition-colors group">
+                    <td className="px-4 py-3 whitespace-nowrap">{format(parseISO(item.data), 'dd/MM/yyyy')}</td>
+                    <td className="px-4 py-3">{item.descricao}</td>
+                    <td className="px-4 py-3">
+                      <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
+                        {item.categoria}
+                      </span>
+                    </td>
+                    <td className={cn(
+                      "px-4 py-3 font-medium whitespace-nowrap",
+                      item.tipo === 'Entrada' ? "text-emerald-600" : "text-rose-600"
+                    )}>
+                      R$ {item.valor.toFixed(2)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={cn(
+                        "rounded-full px-2 py-1 text-xs font-medium",
+                        item.tipo === 'Entrada' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                      )}>
+                        {item.tipo}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {item.tipo === 'Saída' ? (
+                        <select
+                          value={item.destino}
+                          onChange={(e) => {
+                            const newItems = [...reviewItems];
+                            newItems[idx].destino = e.target.value;
+                            setReviewItems(newItems);
+                          }}
+                          className="w-full rounded-lg border-gray-200 bg-gray-50 p-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Selecionar...</option>
+                          <option value="Dividir">Dividir entre todos</option>
+                          {pessoas.map(p => (
+                            <option key={p.id} value={p.id}>{p.nome}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-xs text-gray-400 italic">Automático</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => {
+                          const newItems = reviewItems.filter((_, i) => i !== idx);
+                          setReviewItems(newItems);
+                          if (newItems.length === 0) {
+                            setIsReviewModalOpen(false);
+                          }
+                        }}
+                        className="p-2 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                        title="Remover linha"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setIsReviewModalOpen(false)}
+              className="rounded-xl px-6 py-2 text-gray-600 font-medium hover:bg-gray-100 hover:shadow-sm transition-all active:scale-[0.98]"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleConfirmImport}
+              className="rounded-xl bg-indigo-600 px-8 py-2 text-white font-bold shadow-soft hover:bg-indigo-700 hover:shadow-lg hover:scale-[1.02] transition-all active:scale-[0.98]"
+            >
+              Confirmar Importação
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <ConfirmModal
+        isOpen={isDeletePessoaModalOpen}
+        onClose={() => {
+          setIsDeletePessoaModalOpen(false);
+          setPersonToDelete(null);
+        }}
+        onConfirm={handleDeletePessoa}
+        title="Excluir Pessoa?"
+        message={`Tem certeza que deseja excluir ${personToDelete?.nome}? Todas as despesas e salários associados a esta pessoa também serão removidos permanentemente.`}
+        confirmLabel="Excluir Tudo"
+        cancelLabel="Manter"
+        type="danger"
+      />
+
+      <ConfirmModal
+        isOpen={isRestoreConfirmOpen}
+        onClose={() => {
+          setIsRestoreConfirmOpen(false);
+          setPendingRestoreFile(null);
+        }}
+        onConfirm={handleRestoreBackup}
+        title="Restaurar Banco de Dados?"
+        message="Esta ação irá SUBSTITUIR COMPLETAMENTE todos os dados atuais pelo conteúdo do arquivo de backup. Esta ação não pode ser desfeita."
+        confirmLabel="Substituir Tudo"
+        cancelLabel="Cancelar"
+        type="warning"
+      />
+
+      <ErrorModal 
+        isOpen={!!error} 
+        onClose={() => setError(null)} 
+        message={error || ''} 
+      />
+
+      {toast && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="rounded-2xl bg-gray-900 px-6 py-3 text-white shadow-2xl flex items-center gap-3">
+            <ClipboardCheck className="text-emerald-400" size={20} />
+            <span className="font-medium">{toast}</span>
+          </div>
+        </div>
+      )}
+        </div>
+      </main>
     </div>
   );
 }

@@ -13,6 +13,7 @@ export interface Despesa {
   id: number;
   data: string;
   valor: number;
+  descricao: string;
   origem_id: number;
   destino: string; // "Dividir" ou string(pessoa.id)
   categoria_id: number;
@@ -24,6 +25,7 @@ export interface Salario {
   id: number;
   data: string;
   valor: number;
+  descricao: string;
   recebedor_id: number;
   recebedor_nome?: string;
 }
