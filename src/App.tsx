@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Filter, Users, DollarSign, CreditCard, Tag, TrendingUp, ChevronDown, ChevronUp, ClipboardCheck, Trash2, Download, Upload, RotateCcw, Layers, Loader2, PieChart as PieChartIcon, BarChart as BarChartIcon, Check, ArrowUp, ArrowDown, X, Search } from 'lucide-react';
+import { Plus, Filter, Users, DollarSign, CreditCard, Tag, TrendingUp, ChevronDown, ChevronUp, ClipboardCheck, Trash2, Download, Upload, RotateCcw, Layers, Loader2, PieChart as PieChartIcon, BarChart as BarChartIcon, Check, ArrowUp, ArrowDown, X, Search, Pencil, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
@@ -10,8 +10,10 @@ import {
   differenceInDays, eachMonthOfInterval, eachYearOfInterval, isSameMonth, isSameYear
 } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 import { Pessoa, Categoria, Despesa, Salario, PALETTES } from './types';
+import { copyToClipboard as copyToClipboardUtil } from './utils/clipboard';
 import { Modal } from './components/Modal';
 import { ErrorModal } from './components/ErrorModal';
 import { ConfirmModal } from './components/ConfirmModal';
@@ -135,6 +137,8 @@ export default function App() {
   const [loadingMessage, setLoadingMessage] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [editingRecord, setEditingRecord] = useState<{ id: string; type: 'Entrada' | 'Saída'; value: string } | null>(null);
 
   const PROMPT_CONTA_CORRENTE = `**Tarefa:**
 Extraia do PDF anexado todas as movimentações da conta corrente (entradas e saídas) e gere um arquivo CSV com as colunas:
@@ -251,10 +255,14 @@ CSV com colunas:
 02/01/2026;Food to Save .BELO HORIZONT;Alimentação;19,90;Saída
 \`\`\``;
 
-  const copyToClipboard = (text: string, message: string) => {
-    navigator.clipboard.writeText(text);
-    setToast(message);
-    setTimeout(() => setToast(null), 3000);
+  const copyToClipboard = async (text: string, message: string) => {
+    const success = await copyToClipboardUtil(text);
+    if (success) {
+      setToast(message);
+      setTimeout(() => setToast(null), 3000);
+    } else {
+      setError('Não foi possível copiar o texto automaticamente. Por favor, tente selecionar e copiar manualmente.');
+    }
   };
 
   // Form states
@@ -271,16 +279,19 @@ CSV com colunas:
     setIsLoading(true);
     setLoadingMessage('Carregando dados...');
     try {
+      const t = Date.now();
       const [p, c, d, s] = await Promise.all([
-        fetch('/api/pessoas').then(res => res.json()),
-        fetch('/api/categorias').then(res => res.json()),
-        fetch('/api/despesas').then(res => res.json()),
-        fetch('/api/salarios').then(res => res.json()),
+        fetch(`/api/pessoas?t=${t}`).then(res => res.json()),
+        fetch(`/api/categorias?t=${t}`).then(res => res.json()),
+        fetch(`/api/despesas?t=${t}`).then(res => res.json()),
+        fetch(`/api/salarios?t=${t}`).then(res => res.json()),
       ]);
       setPessoas(p);
       setCategorias(c);
       setDespesas(d);
       setSalarios(s);
+      const logs = await fetch(`/api/logs?t=${t}`).then(res => res.json());
+      setAuditLogs(logs);
     } catch (err) {
       setError('Erro ao carregar dados do servidor. Por favor, tente novamente.');
     } finally {
@@ -306,6 +317,56 @@ CSV com colunas:
       window.removeEventListener('unhandledrejection', handleRejection);
     };
   }, []);
+
+  useEffect(() => {
+    if (isLogModalOpen) {
+      fetchData();
+    }
+  }, [isLogModalOpen]);
+
+  const handleUpdateValue = async () => {
+    if (!editingRecord) return;
+    setIsLoading(true);
+    try {
+      const id = editingRecord.id.split('-')[1];
+      const endpoint = editingRecord.type === 'Saída' ? `/api/despesas/${id}` : `/api/salarios/${id}`;
+      const res = await fetch(endpoint, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ valor: editingRecord.value })
+      });
+      if (!res.ok) throw new Error('Erro ao atualizar valor');
+      
+      setToast('Valor atualizado com sucesso!');
+      setEditingRecord(null);
+      await fetchData();
+    } catch (err) {
+      setError('Erro ao atualizar valor. Tente novamente.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteRecord = async (id: string, type: 'Entrada' | 'Saída') => {
+    if (!window.confirm('Tem certeza que deseja excluir este registro permanentemente?')) return;
+    
+    setIsLoading(true);
+    try {
+      const recordId = id.split('-')[1];
+      const endpoint = type === 'Saída' ? `/api/despesas/${recordId}` : `/api/salarios/${recordId}`;
+      const res = await fetch(endpoint, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Erro ao excluir registro');
+      
+      setToast('Registro excluído com sucesso!');
+      await fetchData();
+    } catch (err) {
+      setError('Erro ao excluir registro. Tente novamente.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const availableYears = useMemo(() => {
     const years = new Set<number>();
@@ -468,6 +529,7 @@ CSV com colunas:
         const isValidDate = !isNaN(dateObj.getTime());
         return { 
           ...d, 
+          id: `despesa-${d.id}`,
           tipo: 'Saída', 
           displayData: d.data,
           formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data
@@ -478,6 +540,7 @@ CSV com colunas:
         const isValidDate = !isNaN(dateObj.getTime());
         return { 
           ...s, 
+          id: `salario-${s.id}`,
           tipo: 'Entrada', 
           displayData: s.data,
           formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data
@@ -599,14 +662,20 @@ CSV com colunas:
   }, [categorias, filteredDespesas]);
 
   const allMovements = useMemo(() => {
+    // 1. Current records from despesas and salarios
     const mDespesas = despesas.map(d => {
       let destinoLabel = d.destino;
       if (d.destino !== 'Dividir') {
-        const p = pessoas.find(p => p.id.toString() === d.destino);
+        const p = pessoas.find(p => Number(p.id) === Number(d.destino));
         destinoLabel = p ? p.nome : d.destino;
       }
       const dateObj = parseISO(d.data);
       const isValidDate = !isNaN(dateObj.getTime());
+      
+      // Get initial value from logs if available
+      const logs = auditLogs.filter(l => Number(l.registro_id) === Number(d.id) && l.tipo === 'Despesa');
+      const initialLog = logs.find(l => l.descricao.startsWith('Lançamento inicial:'));
+      const initialValor = initialLog ? initialLog.valor_novo : d.valor;
       
       return {
         id: `d-${d.id}`,
@@ -620,10 +689,12 @@ CSV com colunas:
         year: isValidDate ? getYear(dateObj).toString() : '',
         descricao: d.descricao || 'Despesa',
         categoria: d.categoria_nome || '-',
-        valor: d.valor,
+        valor: d.valor, // Use current value for the log table
+        originalValor: initialValor,
         tipo: 'Saída',
         pessoa: d.origem_nome || '-',
         destino: destinoLabel,
+        dbId: d.id,
         raw: d
       };
     });
@@ -631,6 +702,11 @@ CSV com colunas:
     const mSalarios = salarios.map(s => {
       const dateObj = parseISO(s.data);
       const isValidDate = !isNaN(dateObj.getTime());
+      
+      // Get initial value from logs if available
+      const logs = auditLogs.filter(l => Number(l.registro_id) === Number(s.id) && l.tipo === 'Salário');
+      const initialLog = logs.find(l => l.descricao.startsWith('Lançamento inicial:'));
+      const initialValor = initialLog ? initialLog.valor_novo : s.valor;
       
       return {
         id: `s-${s.id}`,
@@ -644,16 +720,64 @@ CSV com colunas:
         year: isValidDate ? getYear(dateObj).toString() : '',
         descricao: s.descricao || 'Salário',
         categoria: 'Salário',
-        valor: s.valor,
+        valor: s.valor, // Use current value for the log table
+        originalValor: initialValor,
         tipo: 'Entrada',
         pessoa: '-',
         destino: s.recebedor_nome || '-',
+        dbId: s.id,
         raw: s
       };
     });
 
-    return [...mDespesas, ...mSalarios].sort((a, b) => b.data.localeCompare(a.data));
-  }, [despesas, salarios, pessoas]);
+    // 2. Deleted records from logs (Lançamento inicial for records that don't exist in current state)
+    const currentDespesaIds = new Set(despesas.map(d => Number(d.id)));
+    const currentSalarioIds = new Set(salarios.map(s => Number(s.id)));
+
+    const deletedLogs = auditLogs.filter(l => {
+      if (!l.descricao.startsWith('Lançamento inicial:')) return false;
+      if (l.tipo === 'Despesa' && currentDespesaIds.has(Number(l.registro_id))) return false;
+      if (l.tipo === 'Salário' && currentSalarioIds.has(Number(l.registro_id))) return false;
+      return true;
+    });
+
+    const mDeleted = deletedLogs.map(l => {
+      const dateStr = l.data_registro || l.timestamp.split('T')[0];
+      const dateObj = parseISO(dateStr);
+      const isValidDate = !isNaN(dateObj.getTime());
+      
+      let destinoLabel = l.destino || '-';
+      if (l.tipo === 'Despesa' && l.destino && l.destino !== 'Dividir') {
+        const p = pessoas.find(p => Number(p.id) === Number(l.destino));
+        if (p) destinoLabel = p.nome;
+      }
+
+      const cleanDesc = l.descricao.replace('Lançamento inicial: ', '');
+
+      return {
+        id: `${l.tipo === 'Despesa' ? 'd' : 's'}-${l.registro_id}`,
+        data: dateStr,
+        dateObj,
+        isValidDate,
+        formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : dateStr,
+        month: isValidDate ? getMonth(dateObj) + 1 : 0,
+        monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
+        monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
+        year: isValidDate ? getYear(dateObj).toString() : '',
+        descricao: cleanDesc + ' (Excluído)',
+        categoria: l.categoria_nome || (l.tipo === 'Salário' ? 'Salário' : '-'),
+        valor: l.valor_novo,
+        originalValor: l.valor_novo,
+        tipo: l.tipo === 'Despesa' ? 'Saída' : 'Entrada',
+        pessoa: l.pessoa_nome || '-',
+        destino: destinoLabel,
+        dbId: l.registro_id,
+        raw: l
+      };
+    });
+
+    return [...mDespesas, ...mSalarios, ...mDeleted].sort((a, b) => b.data.localeCompare(a.data));
+  }, [despesas, salarios, auditLogs, pessoas]);
 
   const filteredMovements = useMemo(() => {
     let result = [...allMovements];
@@ -667,6 +791,8 @@ CSV com colunas:
       const myMatch = term.match(monthYearRegex);
       
       result = result.filter(m => {
+        const prefixedId = (m.id.startsWith('d-') ? 'S' : 'E') + m.dbId;
+        
         if (myMatch && m.isValidDate) {
           const searchMonth = parseInt(myMatch[1]);
           const searchYear = myMatch[2];
@@ -678,6 +804,8 @@ CSV com colunas:
         }
 
         return (
+          normalize(prefixedId).includes(term) ||
+          m.dbId.toString().includes(term) ||
           m.data.includes(term) ||
           m.formattedDate.includes(term) ||
           normalize(m.monthName).includes(term) ||
@@ -709,11 +837,37 @@ CSV com colunas:
       });
     } else {
       // Default sort by date descending
-      result.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
+      result.sort((a, b) => {
+        const dateA = new Date(a.data).getTime();
+        const dateB = new Date(b.data).getTime();
+        if (isNaN(dateA) && isNaN(dateB)) return 0;
+        if (isNaN(dateA)) return 1;
+        if (isNaN(dateB)) return -1;
+        return dateB - dateA;
+      });
     }
 
     return result;
   }, [allMovements, logSearchTerm, logSort]);
+
+  const filteredAuditLogs = useMemo(() => {
+    let result = auditLogs.filter(l => 
+      !l.descricao.startsWith('Lançamento inicial:') && 
+      !l.descricao.startsWith('Exclusão:')
+    );
+    
+    if (logSearchTerm) {
+      const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const term = normalize(logSearchTerm).trim();
+      result = result.filter(l => 
+        normalize(l.descricao).includes(term) ||
+        l.valor_antigo.toString().includes(term) ||
+        l.valor_novo.toString().includes(term)
+      );
+    }
+    
+    return result.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [auditLogs, logSearchTerm]);
 
   const LogTableHeader = ({ label, columnKey }: { label: string, columnKey: string }) => {
     const isSorted = logSort?.key === columnKey;
@@ -1041,69 +1195,71 @@ CSV com colunas:
     }
   };
 
-  const handleExportData = (options: ExportOptions) => {
+  const handleExportData = async (options: ExportOptions) => {
     if (!selectedPersonDetails) return;
 
-    const dataToExport = selectedPersonDetails.movements.map((m: any) => {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Resumo');
+
+    const columns: any[] = [];
+    if (options.columns.includes('date')) columns.push({ header: 'Data', key: 'date', width: 15 });
+    if (options.columns.includes('description')) columns.push({ header: 'Descrição', key: 'description', width: 30 });
+    if (options.columns.includes('category')) columns.push({ header: 'Categoria', key: 'category', width: 20 });
+    if (options.columns.includes('value')) columns.push({ header: 'Valor', key: 'value', width: 15 });
+    if (options.columns.includes('type')) columns.push({ header: 'Tipo', key: 'type', width: 15 });
+    worksheet.columns = columns;
+
+    selectedPersonDetails.movements.forEach((m: any) => {
       const row: any = {};
-      if (options.columns.includes('date')) row['Data'] = format(parseISO(m.displayData), 'dd/MM/yyyy');
-      if (options.columns.includes('description')) row['Descrição'] = m.descricao;
-      if (options.columns.includes('category')) row['Categoria'] = m.categoria_nome || '-';
-      if (options.columns.includes('value')) row['Valor'] = m.valor;
-      if (options.columns.includes('type')) row['Tipo'] = m.tipo;
-      return row;
+      if (options.columns.includes('date')) row['date'] = format(parseISO(m.displayData), 'dd/MM/yyyy');
+      if (options.columns.includes('description')) row['description'] = m.descricao;
+      if (options.columns.includes('category')) row['category'] = m.categoria_nome || '-';
+      if (options.columns.includes('value')) row['value'] = m.valor;
+      if (options.columns.includes('type')) row['type'] = m.tipo;
+      worksheet.addRow(row);
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Resumo");
-
     if (options.format === 'xlsx') {
-      XLSX.writeFile(workbook, `${options.filename}.xlsx`);
+      const buffer = await workbook.xlsx.writeBuffer();
+      saveAs(new Blob([buffer]), `${options.filename}.xlsx`);
     } else {
-      const csv = XLSX.utils.sheet_to_csv(worksheet);
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      link.setAttribute("href", url);
-      link.setAttribute("download", `${options.filename}.csv`);
-      link.style.visibility = 'hidden';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      const buffer = await workbook.csv.writeBuffer();
+      saveAs(new Blob([buffer]), `${options.filename}.csv`);
     }
   };
 
-  const handleExportLog = (options: ExportOptions) => {
-    const dataToExport = filteredMovements.map((m: any) => {
+  const handleExportLog = async (options: ExportOptions) => {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Log_Atividades');
+
+    const columns: any[] = [];
+    if (options.columns.includes('date')) columns.push({ header: 'Data', key: 'date', width: 15 });
+    if (options.columns.includes('description')) columns.push({ header: 'Descrição', key: 'description', width: 30 });
+    if (options.columns.includes('category')) columns.push({ header: 'Categoria', key: 'category', width: 20 });
+    if (options.columns.includes('value')) columns.push({ header: 'Valor', key: 'value', width: 15 });
+    if (options.columns.includes('type')) columns.push({ header: 'Tipo', key: 'type', width: 15 });
+    if (options.columns.includes('person')) columns.push({ header: 'Pessoa', key: 'person', width: 20 });
+    if (options.columns.includes('destination')) columns.push({ header: 'Destino', key: 'destination', width: 20 });
+    worksheet.columns = columns;
+
+    filteredMovements.forEach((m: any) => {
       const row: any = {};
-      if (options.columns.includes('date')) row['Data'] = format(parseISO(m.data), 'dd/MM/yyyy');
-      if (options.columns.includes('description')) row['Descrição'] = m.descricao;
-      if (options.columns.includes('category')) row['Categoria'] = m.categoria || '-';
-      if (options.columns.includes('value')) row['Valor'] = m.valor;
-      if (options.columns.includes('type')) row['Tipo'] = m.tipo;
-      if (options.columns.includes('person')) row['Pessoa'] = m.pessoa;
-      if (options.columns.includes('destination')) row['Destino'] = m.destino;
-      return row;
+      if (options.columns.includes('date')) row['date'] = format(parseISO(m.data), 'dd/MM/yyyy');
+      if (options.columns.includes('description')) row['description'] = m.descricao;
+      if (options.columns.includes('category')) row['category'] = m.categoria || '-';
+      if (options.columns.includes('value')) row['value'] = m.valor;
+      if (options.columns.includes('type')) row['type'] = m.tipo;
+      if (options.columns.includes('person')) row['person'] = m.pessoa;
+      if (options.columns.includes('destination')) row['destination'] = m.destino;
+      worksheet.addRow(row);
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Log_Atividades");
-
     if (options.format === 'xlsx') {
-      XLSX.writeFile(workbook, `${options.filename}.xlsx`);
+      const buffer = await workbook.xlsx.writeBuffer();
+      saveAs(new Blob([buffer]), `${options.filename}.xlsx`);
     } else {
-      const csv = XLSX.utils.sheet_to_csv(worksheet);
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      link.setAttribute("href", url);
-      link.setAttribute("download", `${options.filename}.csv`);
-      link.style.visibility = 'hidden';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      const buffer = await workbook.csv.writeBuffer();
+      saveAs(new Blob([buffer]), `${options.filename}.csv`);
     }
   };
 
@@ -1707,6 +1863,15 @@ CSV com colunas:
                 />
               </div>
               <button
+                onClick={fetchData}
+                disabled={isLoading}
+                className="flex items-center gap-2 rounded-xl bg-amber-50 px-4 py-2 text-sm font-bold text-amber-600 hover:bg-amber-100 transition-all active:scale-95 shadow-sm disabled:opacity-50"
+                title="Atualizar dados"
+              >
+                <RefreshCw size={18} className={isLoading ? 'animate-spin' : ''} />
+                Atualizar
+              </button>
+              <button
                 onClick={() => setIsLogExportModalOpen(true)}
                 className="flex items-center gap-2 rounded-xl bg-indigo-50 px-4 py-2 text-sm font-bold text-indigo-600 hover:bg-indigo-100 transition-all active:scale-95 shadow-sm"
               >
@@ -1733,6 +1898,7 @@ CSV com colunas:
             <table className="w-full text-left text-sm">
               <thead className="sticky top-[48px] bg-gray-100 text-gray-600 z-10">
                 <tr>
+                  <LogTableHeader label="ID" columnKey="dbId" />
                   <LogTableHeader label="Data" columnKey="formattedDate" />
                   <LogTableHeader label="Descrição" columnKey="descricao" />
                   <LogTableHeader label="Categoria" columnKey="categoria" />
@@ -1746,6 +1912,9 @@ CSV com colunas:
                 {filteredMovements.length > 0 ? (
                   filteredMovements.map(m => (
                     <tr key={m.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                        {m.id.startsWith('d-') ? 'S' : 'E'}{m.dbId}
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap">{m.formattedDate}</td>
                       <td className="px-4 py-3">{m.descricao}</td>
                       <td className="px-4 py-3">
@@ -1775,7 +1944,7 @@ CSV com colunas:
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 italic">
+                    <td colSpan={8} className="px-4 py-8 text-center text-gray-500 italic">
                       Nenhuma movimentação encontrada.
                     </td>
                   </tr>
@@ -1783,6 +1952,54 @@ CSV com colunas:
               </tbody>
             </table>
           </div>
+
+          {filteredAuditLogs.length > 0 && (
+            <div className="mt-8 space-y-4">
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                <div className="w-1 h-3 bg-amber-500 rounded-full" />
+                Histórico de Alterações
+              </h3>
+              <div className="rounded-xl border border-gray-100 overflow-hidden">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="px-4 py-2 font-semibold">Data/Hora</th>
+                      <th className="px-4 py-2 font-semibold">ID</th>
+                      <th className="px-4 py-2 font-semibold">Tipo</th>
+                      <th className="px-4 py-2 font-semibold">Pessoa</th>
+                      <th className="px-4 py-2 font-semibold">Registro</th>
+                      <th className="px-4 py-2 font-semibold">De</th>
+                      <th className="px-4 py-2 font-semibold">Para</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50 bg-white">
+                    {filteredAuditLogs.map(log => (
+                      <tr key={log.id} className="text-xs">
+                        <td className="px-4 py-2 text-gray-500">
+                          {format(parseISO(log.timestamp), 'dd/MM/yy HH:mm')}
+                        </td>
+                        <td className="px-4 py-2 font-mono text-[10px] text-gray-400">
+                          {log.tipo === 'Salário' ? 'E' : 'S'}{log.registro_id}
+                        </td>
+                        <td className="px-4 py-2">
+                          <span className={cn(
+                            "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                            log.tipo === 'Salário' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                          )}>
+                            {log.tipo}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-gray-600">{log.pessoa_nome || '-'}</td>
+                        <td className="px-4 py-2 font-medium">{log.descricao}</td>
+                        <td className="px-4 py-2 text-rose-600">{formatCurrency(log.valor_antigo)}</td>
+                        <td className="px-4 py-2 text-emerald-600">{formatCurrency(log.valor_novo)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
 
@@ -1865,8 +2082,8 @@ CSV com colunas:
                   </thead>
                   <tbody className="divide-y divide-gray-50 bg-white">
                     {selectedPersonDetails.movements.length > 0 ? (
-                      selectedPersonDetails.movements.map((m: any, idx: number) => (
-                        <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                      selectedPersonDetails.movements.map((m: any) => (
+                        <tr key={m.id} className="hover:bg-gray-50 transition-colors group">
                           <td className="px-4 py-3 whitespace-nowrap">{m.formattedDate}</td>
                           <td className="px-4 py-3">
                             <div className="font-medium">{m.descricao}</div>
@@ -1878,7 +2095,46 @@ CSV com colunas:
                             "px-4 py-3 font-medium whitespace-nowrap",
                             m.tipo === 'Entrada' ? "text-emerald-600" : "text-rose-600"
                           )}>
-                            {formatCurrency(m.valor)}
+                            {editingRecord?.id === m.id ? (
+                              <div className="flex items-center gap-2">
+                                <input 
+                                  type="number" 
+                                  step="0.01"
+                                  autoFocus
+                                  value={editingRecord.value}
+                                  onChange={e => setEditingRecord({ ...editingRecord, value: e.target.value })}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') handleUpdateValue();
+                                    if (e.key === 'Escape') setEditingRecord(null);
+                                  }}
+                                  className="w-24 rounded-lg border-gray-200 bg-gray-50 p-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                                <button onClick={handleUpdateValue} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded">
+                                  <Check size={16} />
+                                </button>
+                                <button onClick={() => setEditingRecord(null)} className="p-1 text-rose-600 hover:bg-rose-50 rounded">
+                                  <X size={16} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                {formatCurrency(m.valor)}
+                                <button 
+                                  onClick={() => setEditingRecord({ id: m.id, type: m.tipo, value: m.valor.toString() })}
+                                  className="p-1 text-gray-400 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-all"
+                                  title="Editar Valor"
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                                <button 
+                                  onClick={() => handleDeleteRecord(m.id, m.tipo)}
+                                  className="p-1 text-gray-400 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-all"
+                                  title="Excluir Registro"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             <span className={cn(

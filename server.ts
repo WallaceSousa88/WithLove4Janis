@@ -50,11 +50,28 @@ async function startServer() {
         recebedor_id INTEGER NOT NULL,
         FOREIGN KEY(recebedor_id) REFERENCES pessoas(id)
       );
+
+      CREATE TABLE IF NOT EXISTS logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        descricao TEXT NOT NULL,
+        valor_antigo REAL,
+        valor_novo REAL,
+        tipo TEXT NOT NULL,
+        registro_id INTEGER NOT NULL,
+        pessoa_id INTEGER,
+        data_registro TEXT,
+        destino TEXT,
+        categoria_id INTEGER
+      );
     `);
 
     // Ensure columns exist for existing databases
     try { database.exec("ALTER TABLE despesas ADD COLUMN descricao TEXT DEFAULT ''"); } catch (e) {}
     try { database.exec("ALTER TABLE salarios ADD COLUMN descricao TEXT DEFAULT ''"); } catch (e) {}
+    try { database.exec("ALTER TABLE logs ADD COLUMN data_registro TEXT"); } catch (e) {}
+    try { database.exec("ALTER TABLE logs ADD COLUMN destino TEXT"); } catch (e) {}
+    try { database.exec("ALTER TABLE logs ADD COLUMN categoria_id INTEGER"); } catch (e) {}
   };
 
   // Normalize dates in despesas and salarios to YYYY-MM-DD
@@ -170,8 +187,8 @@ async function startServer() {
     const data = db.prepare(`
       SELECT d.*, p.nome as origem_nome, c.nome as categoria_nome 
       FROM despesas d
-      JOIN pessoas p ON d.origem_id = p.id
-      JOIN categorias c ON d.categoria_id = c.id
+      LEFT JOIN pessoas p ON d.origem_id = p.id
+      LEFT JOIN categorias c ON d.categoria_id = c.id
     `).all();
     res.json(data);
   });
@@ -193,6 +210,12 @@ async function startServer() {
     const result = db.prepare(
       "INSERT INTO despesas (data, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?)"
     ).run(data, roundedValor, descricao || '', origem_id, destino, categoria_id);
+
+    // Log the creation
+    db.prepare(
+      "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id, data_registro, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(new Date().toISOString(), `Lançamento inicial: ${descricao || 'Despesa'}`, 0, roundedValor, 'Despesa', result.lastInsertRowid, origem_id, data, destino, categoria_id);
+
     res.json({ id: result.lastInsertRowid, data, valor: roundedValor, descricao, origem_id, destino, categoria_id });
   });
 
@@ -200,7 +223,7 @@ async function startServer() {
     const data = db.prepare(`
       SELECT s.*, p.nome as recebedor_nome 
       FROM salarios s
-      JOIN pessoas p ON s.recebedor_id = p.id
+      LEFT JOIN pessoas p ON s.recebedor_id = p.id
     `).all();
     res.json(data);
   });
@@ -222,7 +245,106 @@ async function startServer() {
     const result = db.prepare(
       "INSERT INTO salarios (data, valor, descricao, recebedor_id) VALUES (?, ?, ?, ?)"
     ).run(data, roundedValor, descricao || '', recebedor_id);
+
+    // Log the creation
+    db.prepare(
+      "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id, data_registro, destino) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(new Date().toISOString(), `Lançamento inicial: ${descricao || 'Salário'}`, 0, roundedValor, 'Salário', result.lastInsertRowid, recebedor_id, data, 'Salário');
+
     res.json({ id: result.lastInsertRowid, data, valor: roundedValor, descricao, recebedor_id });
+  });
+
+  app.patch("/api/despesas/:id", (req, res) => {
+    const { id } = req.params;
+    const { valor } = req.body;
+    const roundedValor = Math.round(Number(valor) * 100) / 100;
+
+    try {
+      const oldRecord = db.prepare("SELECT valor, descricao, origem_id FROM despesas WHERE id = ?").get(id) as any;
+      if (!oldRecord) return res.status(404).json({ error: "Despesa não encontrada" });
+
+      db.prepare("UPDATE despesas SET valor = ? WHERE id = ?").run(roundedValor, id);
+      
+      // Log the change
+      db.prepare(
+        "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(new Date().toISOString(), `Alteração de valor: ${oldRecord.descricao}`, oldRecord.valor, roundedValor, 'Despesa', id, oldRecord.origem_id);
+
+      res.json({ success: true, valor: roundedValor });
+    } catch (e) {
+      res.status(500).json({ error: "Erro ao atualizar valor da despesa." });
+    }
+  });
+
+  app.patch("/api/salarios/:id", (req, res) => {
+    const { id } = req.params;
+    const { valor } = req.body;
+    const roundedValor = Math.round(Number(valor) * 100) / 100;
+
+    try {
+      const oldRecord = db.prepare("SELECT valor, descricao, recebedor_id FROM salarios WHERE id = ?").get(id) as any;
+      if (!oldRecord) return res.status(404).json({ error: "Salário não encontrado" });
+
+      db.prepare("UPDATE salarios SET valor = ? WHERE id = ?").run(roundedValor, id);
+
+      // Log the change
+      db.prepare(
+        "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(new Date().toISOString(), `Alteração de valor: ${oldRecord.descricao}`, oldRecord.valor, roundedValor, 'Salário', id, oldRecord.recebedor_id);
+
+      res.json({ success: true, valor: roundedValor });
+    } catch (e) {
+      res.status(500).json({ error: "Erro ao atualizar valor do salário." });
+    }
+  });
+
+  app.delete("/api/despesas/:id", (req, res) => {
+    const { id } = req.params;
+    try {
+      const oldRecord = db.prepare("SELECT valor, descricao, origem_id FROM despesas WHERE id = ?").get(id) as any;
+      if (!oldRecord) return res.status(404).json({ error: "Despesa não encontrada" });
+
+      db.prepare("DELETE FROM despesas WHERE id = ?").run(id);
+
+      // Log the deletion
+      db.prepare(
+        "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(new Date().toISOString(), `Exclusão: ${oldRecord.descricao}`, oldRecord.valor, 0, 'Despesa', id, oldRecord.origem_id);
+
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: "Erro ao excluir despesa." });
+    }
+  });
+
+  app.delete("/api/salarios/:id", (req, res) => {
+    const { id } = req.params;
+    try {
+      const oldRecord = db.prepare("SELECT valor, descricao, recebedor_id FROM salarios WHERE id = ?").get(id) as any;
+      if (!oldRecord) return res.status(404).json({ error: "Salário não encontrado" });
+
+      db.prepare("DELETE FROM salarios WHERE id = ?").run(id);
+
+      // Log the deletion
+      db.prepare(
+        "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(new Date().toISOString(), `Exclusão: ${oldRecord.descricao}`, oldRecord.valor, 0, 'Salário', id, oldRecord.recebedor_id);
+
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: "Erro ao excluir salário." });
+    }
+  });
+
+  app.get("/api/logs", (req, res) => {
+    const data = db.prepare(`
+      SELECT l.*, p.nome as pessoa_nome, c.nome as categoria_nome 
+      FROM logs l
+      LEFT JOIN pessoas p ON l.pessoa_id = p.id
+      LEFT JOIN categorias c ON l.categoria_id = c.id
+      ORDER BY l.timestamp DESC
+    `).all();
+    res.json(data);
   });
 
   app.delete("/api/pessoas/:id", (req, res) => {
