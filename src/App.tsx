@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Filter, Users, DollarSign, CreditCard, Tag, TrendingUp, ChevronDown, ChevronUp, ClipboardCheck, Trash2, Download, Upload, RotateCcw, Layers, Loader2, PieChart as PieChartIcon, BarChart as BarChartIcon, Check, ArrowUp, ArrowDown, X, Search, Pencil, RefreshCw } from 'lucide-react';
+import { Plus, Filter, Users, DollarSign, CreditCard, Tag, TrendingUp, ChevronDown, ChevronUp, ClipboardCheck, Trash2, Download, Upload, RotateCcw, Layers, Loader2, PieChart as PieChartIcon, BarChart as BarChartIcon, Check, X, Search, Pencil, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
@@ -7,7 +7,8 @@ import {
 } from 'recharts';
 import { 
   format, parseISO, getMonth, getYear, startOfMonth, endOfMonth, eachDayOfInterval,
-  differenceInDays, eachMonthOfInterval, eachYearOfInterval, isSameMonth, isSameYear
+  differenceInDays, eachMonthOfInterval, eachYearOfInterval, isSameMonth, isSameYear,
+  startOfDay, endOfDay, isWithinInterval
 } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import ExcelJS from 'exceljs';
@@ -117,13 +118,14 @@ export default function App() {
   const [isDespesaModalOpen, setIsDespesaModalOpen] = useState(false);
   const [isSalarioModalOpen, setIsSalarioModalOpen] = useState(false);
   const [isCategoriaModalOpen, setIsCategoriaModalOpen] = useState(false);
+  const [editingCategoria, setEditingCategoria] = useState<{ id: number; nome: string } | null>(null);
+  const [isDeleteCategoriaModalOpen, setIsDeleteCategoriaModalOpen] = useState(false);
+  const [categoriaToDelete, setCategoriaToDelete] = useState<any>(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   const [activePieIndex, setActivePieIndex] = useState(0);
   const [activeChart, setActiveChart] = useState<'bar' | 'pie'>('bar');
 
-  const [isLogModalOpen, setIsLogModalOpen] = useState(false);
-  const [isLogExportModalOpen, setIsLogExportModalOpen] = useState(false);
   const [isPersonDetailModalOpen, setIsPersonDetailModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
@@ -139,6 +141,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [editingRecord, setEditingRecord] = useState<{ id: string; type: 'Entrada' | 'Saída'; value: string } | null>(null);
+  const [personSearchTerm, setPersonSearchTerm] = useState('');
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   const PROMPT_CONTA_CORRENTE = `**Tarefa:**
 Extraia do PDF anexado todas as movimentações da conta corrente (entradas e saídas) e gere um arquivo CSV com as colunas:
@@ -293,6 +303,7 @@ CSV com colunas:
       const logs = await fetch(`/api/logs?t=${t}`).then(res => res.json());
       setAuditLogs(logs);
     } catch (err) {
+      console.error('Erro no fetchData:', err);
       setError('Erro ao carregar dados do servidor. Por favor, tente novamente.');
     } finally {
       setIsLoading(false);
@@ -319,13 +330,18 @@ CSV com colunas:
   }, []);
 
   useEffect(() => {
-    if (isLogModalOpen) {
-      fetchData();
-    }
-  }, [isLogModalOpen]);
+    fetchData();
+  }, []);
 
   const handleUpdateValue = async () => {
     if (!editingRecord) return;
+    
+    const valorNum = parseFloat(editingRecord.value);
+    if (isNaN(valorNum)) {
+      setError('Por favor, insira um valor numérico válido.');
+      return;
+    }
+
     setIsLoading(true);
     try {
       const id = editingRecord.id.split('-')[1];
@@ -333,7 +349,7 @@ CSV com colunas:
       const res = await fetch(endpoint, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ valor: editingRecord.value })
+        body: JSON.stringify({ valor: valorNum })
       });
       if (!res.ok) throw new Error('Erro ao atualizar valor');
       
@@ -523,7 +539,7 @@ CSV com colunas:
     const pDespesas = filteredDespesas.filter(d => d.origem_id === selectedPersonId);
     const pSalarios = filteredSalarios.filter(s => s.recebedor_id === selectedPersonId);
 
-    const movements = [
+    let movements = [
       ...pDespesas.map(d => {
         const dateObj = parseISO(d.data);
         const isValidDate = !isNaN(dateObj.getTime());
@@ -548,6 +564,29 @@ CSV com colunas:
       })
     ].sort((a, b) => b.displayData.localeCompare(a.displayData));
 
+    if (personSearchTerm) {
+      const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const term = normalize(personSearchTerm).trim();
+      const numericTerm = term.replace(',', '.');
+
+      movements = movements.filter(m => {
+        const valorStr = m.valor.toString();
+        const valorFixed = m.valor.toFixed(2);
+        const valorFormatted = formatCurrency(m.valor).toLowerCase();
+
+        return normalize(m.descricao).includes(term) ||
+          (m.categoria_nome && normalize(m.categoria_nome).includes(term)) ||
+          valorStr.includes(term) ||
+          valorStr.includes(numericTerm) ||
+          valorFixed.includes(term) ||
+          valorFixed.includes(numericTerm) ||
+          valorFixed.replace('.', ',').includes(term) ||
+          valorFormatted.includes(term) ||
+          m.formattedDate.includes(term) ||
+          normalize(m.tipo).includes(term);
+      });
+    }
+
     const totalSpent = pDespesas.reduce((sum, d) => sum + d.valor, 0);
     const exclusiveSpent = pDespesas.filter(d => d.destino !== 'Dividir').reduce((sum, d) => sum + d.valor, 0);
     const sharedSpent = pDespesas.filter(d => d.destino === 'Dividir').reduce((sum, d) => sum + d.valor, 0);
@@ -562,7 +601,7 @@ CSV com colunas:
       totalSalary,
       net: totalSalary - totalSpent
     };
-  }, [selectedPersonId, pessoas, filteredDespesas, filteredSalarios]);
+  }, [selectedPersonId, pessoas, filteredDespesas, filteredSalarios, personSearchTerm]);
 
   const barChartData = useMemo(() => {
     const items = [...filteredDespesas, ...filteredSalarios];
@@ -662,8 +701,32 @@ CSV com colunas:
   }, [categorias, filteredDespesas]);
 
   const allMovements = useMemo(() => {
-    // 1. Current records from despesas and salarios
-    const mDespesas = despesas.map(d => {
+    // Pre-index auditLogs for faster lookup of initial values
+    const initialLogsMap = new Map();
+    auditLogs.forEach(l => {
+      if (l.descricao.includes('Lançamento inicial:')) {
+        initialLogsMap.set(`${l.tipo}-${l.registro_id}`, l);
+      }
+    });
+
+    // Helper to check if a date string matches current dashboard filters
+    const matchesFilters = (dateStr: string) => {
+      const dDate = parseISO(dateStr);
+      if (isNaN(dDate.getTime())) return false;
+      
+      if (startDate && endDate) {
+        const start = startOfDay(parseISO(startDate));
+        const end = endOfDay(parseISO(endDate));
+        return isWithinInterval(dDate, { start, end });
+      }
+      
+      const m = getMonth(dDate) + 1;
+      const y = getYear(dDate).toString();
+      return m === filterMonth && y === filterYear;
+    };
+
+    // 1. Current records from despesas and salarios (using raw despesas/salarios but applying same filtering logic)
+    const mDespesas = despesas.filter(d => matchesFilters(d.data)).map(d => {
       let destinoLabel = d.destino;
       if (d.destino !== 'Dividir') {
         const p = pessoas.find(p => Number(p.id) === Number(d.destino));
@@ -673,8 +736,7 @@ CSV com colunas:
       const isValidDate = !isNaN(dateObj.getTime());
       
       // Get initial value from logs if available
-      const logs = auditLogs.filter(l => Number(l.registro_id) === Number(d.id) && l.tipo === 'Despesa');
-      const initialLog = logs.find(l => l.descricao.startsWith('Lançamento inicial:'));
+      const initialLog = initialLogsMap.get(`Despesa-${d.id}`);
       const initialValor = initialLog ? initialLog.valor_novo : d.valor;
       
       return {
@@ -689,7 +751,7 @@ CSV com colunas:
         year: isValidDate ? getYear(dateObj).toString() : '',
         descricao: d.descricao || 'Despesa',
         categoria: d.categoria_nome || '-',
-        valor: d.valor, // Use current value for the log table
+        valor: d.valor, 
         originalValor: initialValor,
         tipo: 'Saída',
         pessoa: d.origem_nome || '-',
@@ -699,13 +761,12 @@ CSV com colunas:
       };
     });
 
-    const mSalarios = salarios.map(s => {
+    const mSalarios = salarios.filter(s => matchesFilters(s.data)).map(s => {
       const dateObj = parseISO(s.data);
       const isValidDate = !isNaN(dateObj.getTime());
       
       // Get initial value from logs if available
-      const logs = auditLogs.filter(l => Number(l.registro_id) === Number(s.id) && l.tipo === 'Salário');
-      const initialLog = logs.find(l => l.descricao.startsWith('Lançamento inicial:'));
+      const initialLog = initialLogsMap.get(`Entrada-${s.id}`);
       const initialValor = initialLog ? initialLog.valor_novo : s.valor;
       
       return {
@@ -718,9 +779,9 @@ CSV com colunas:
         monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
         monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
         year: isValidDate ? getYear(dateObj).toString() : '',
-        descricao: s.descricao || 'Salário',
-        categoria: 'Salário',
-        valor: s.valor, // Use current value for the log table
+        descricao: s.descricao || 'Entrada',
+        categoria: 'Entrada',
+        valor: s.valor, 
         originalValor: initialValor,
         tipo: 'Entrada',
         pessoa: '-',
@@ -730,15 +791,17 @@ CSV com colunas:
       };
     });
 
-    // 2. Deleted records from logs (Lançamento inicial for records that don't exist in current state)
+    // 2. Deleted records from logs
     const currentDespesaIds = new Set(despesas.map(d => Number(d.id)));
     const currentSalarioIds = new Set(salarios.map(s => Number(s.id)));
 
     const deletedLogs = auditLogs.filter(l => {
-      if (!l.descricao.startsWith('Lançamento inicial:')) return false;
+      if (!l.descricao.includes('Lançamento inicial:')) return false;
       if (l.tipo === 'Despesa' && currentDespesaIds.has(Number(l.registro_id))) return false;
-      if (l.tipo === 'Salário' && currentSalarioIds.has(Number(l.registro_id))) return false;
-      return true;
+      if (l.tipo === 'Entrada' && currentSalarioIds.has(Number(l.registro_id))) return false;
+      
+      const dateStr = l.data_registro || l.timestamp.split('T')[0];
+      return matchesFilters(dateStr);
     });
 
     const mDeleted = deletedLogs.map(l => {
@@ -752,7 +815,7 @@ CSV com colunas:
         if (p) destinoLabel = p.nome;
       }
 
-      const cleanDesc = l.descricao.replace('Lançamento inicial: ', '');
+      const cleanDesc = l.descricao.split('Lançamento inicial: ')[1] || l.descricao;
 
       return {
         id: `${l.tipo === 'Despesa' ? 'd' : 's'}-${l.registro_id}`,
@@ -765,7 +828,7 @@ CSV com colunas:
         monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
         year: isValidDate ? getYear(dateObj).toString() : '',
         descricao: cleanDesc + ' (Excluído)',
-        categoria: l.categoria_nome || (l.tipo === 'Salário' ? 'Salário' : '-'),
+        categoria: l.categoria_nome || (l.tipo === 'Entrada' ? 'Entrada' : '-'),
         valor: l.valor_novo,
         originalValor: l.valor_novo,
         tipo: l.tipo === 'Despesa' ? 'Saída' : 'Entrada',
@@ -776,8 +839,46 @@ CSV com colunas:
       };
     });
 
-    return [...mDespesas, ...mSalarios, ...mDeleted].sort((a, b) => b.data.localeCompare(a.data));
-  }, [despesas, salarios, auditLogs, pessoas]);
+    // 3. Other activities (Pessoas and Categorias)
+    const mOther = auditLogs.filter(l => {
+      if (l.tipo !== 'Pessoa' && l.tipo !== 'Categoria') return false;
+      const dateStr = l.timestamp.split('T')[0];
+      return matchesFilters(dateStr);
+    }).map(l => {
+      const dateStr = l.timestamp.split('T')[0];
+      const dateObj = parseISO(dateStr);
+      const isValidDate = !isNaN(dateObj.getTime());
+
+      return {
+        id: `${l.tipo === 'Pessoa' ? 'p' : 'c'}-${l.registro_id}`,
+        data: dateStr,
+        dateObj,
+        isValidDate,
+        formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : dateStr,
+        month: isValidDate ? getMonth(dateObj) + 1 : 0,
+        monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
+        monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
+        year: isValidDate ? getYear(dateObj).toString() : '',
+        descricao: l.descricao,
+        categoria: l.tipo,
+        valor: 0,
+        originalValor: 0,
+        tipo: 'Atividade',
+        pessoa: l.tipo === 'Pessoa' ? l.descricao.replace('Nova Pessoa: ', '') : '-',
+        destino: '-',
+        dbId: l.registro_id,
+        raw: l
+      };
+    });
+
+    const finalResult = [...mDespesas, ...mSalarios, ...mDeleted, ...mOther].sort((a, b) => {
+      const dateComp = b.data.localeCompare(a.data);
+      if (dateComp !== 0) return dateComp;
+      return Number(b.dbId) - Number(a.dbId);
+    });
+    
+    return finalResult;
+  }, [despesas, salarios, auditLogs, pessoas, filterMonth, filterYear, startDate, endDate]);
 
   const filteredMovements = useMemo(() => {
     let result = [...allMovements];
@@ -786,12 +887,16 @@ CSV com colunas:
     if (logSearchTerm) {
       const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
       const term = normalize(logSearchTerm).trim();
+      const numericTerm = term.replace(',', '.');
       
       const monthYearRegex = /^(\d{1,2})\s*[\/\-]\s*(\d{2,4})$/;
       const myMatch = term.match(monthYearRegex);
       
       result = result.filter(m => {
-        const prefixedId = (m.id.startsWith('d-') ? 'S' : 'E') + m.dbId;
+        const prefix = m.id.startsWith('d-') ? 'S' : 
+                       m.id.startsWith('s-') ? 'E' : 
+                       m.id.startsWith('p-') ? 'P' : 'C';
+        const prefixedId = prefix + m.dbId;
         
         if (myMatch && m.isValidDate) {
           const searchMonth = parseInt(myMatch[1]);
@@ -803,6 +908,10 @@ CSV com colunas:
           if (monthMatches && yearMatches) return true;
         }
 
+        const valorStr = m.valor.toString();
+        const valorFixed = m.valor.toFixed(2);
+        const valorFormatted = formatCurrency(m.valor).toLowerCase();
+
         return (
           normalize(prefixedId).includes(term) ||
           m.dbId.toString().includes(term) ||
@@ -812,7 +921,12 @@ CSV com colunas:
           normalize(m.monthNameShort).includes(term) ||
           normalize(m.descricao).includes(term) ||
           normalize(m.categoria).includes(term) ||
-          m.valor.toString().includes(term) ||
+          valorStr.includes(term) ||
+          valorStr.includes(numericTerm) ||
+          valorFixed.includes(term) ||
+          valorFixed.includes(numericTerm) ||
+          valorFixed.replace('.', ',').includes(term) ||
+          valorFormatted.includes(term) ||
           normalize(m.tipo).includes(term) ||
           normalize(m.pessoa).includes(term) ||
           normalize(m.destino).includes(term)
@@ -835,16 +949,6 @@ CSV com colunas:
         
         return logSort.direction === 'asc' ? comparison : -comparison;
       });
-    } else {
-      // Default sort by date descending
-      result.sort((a, b) => {
-        const dateA = new Date(a.data).getTime();
-        const dateB = new Date(b.data).getTime();
-        if (isNaN(dateA) && isNaN(dateB)) return 0;
-        if (isNaN(dateA)) return 1;
-        if (isNaN(dateB)) return -1;
-        return dateB - dateA;
-      });
     }
 
     return result;
@@ -853,7 +957,9 @@ CSV com colunas:
   const filteredAuditLogs = useMemo(() => {
     let result = auditLogs.filter(l => 
       !l.descricao.startsWith('Lançamento inicial:') && 
-      !l.descricao.startsWith('Exclusão:')
+      !l.descricao.startsWith('Exclusão:') &&
+      !l.descricao.startsWith('Nova Pessoa:') &&
+      !l.descricao.startsWith('Nova Categoria:')
     );
     
     if (logSearchTerm) {
@@ -925,24 +1031,43 @@ CSV com colunas:
 
   const handleAddDespesa = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    const valorNum = parseFloat(newDespesa.valor);
+    const origemIdNum = parseInt(newDespesa.origem_id);
+    const categoriaIdNum = parseInt(newDespesa.categoria_id);
+
+    if (isNaN(valorNum) || isNaN(origemIdNum) || isNaN(categoriaIdNum)) {
+      setError('Por favor, preencha todos os campos obrigatórios com valores válidos.');
+      return;
+    }
+
     try {
       const res = await fetch('/api/despesas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           ...newDespesa, 
-          valor: parseFloat(newDespesa.valor), 
-          origem_id: parseInt(newDespesa.origem_id), 
-          categoria_id: parseInt(newDespesa.categoria_id) 
+          valor: valorNum, 
+          origem_id: origemIdNum, 
+          categoria_id: categoriaIdNum 
         }),
       });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || 'Falha ao salvar despesa');
       }
-      setNewDespesa({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', origem_id: '', destino: 'Dividir', categoria_id: '' });
+      // Reset all fields
+      setNewDespesa({ 
+        data: format(new Date(), 'yyyy-MM-dd'), 
+        valor: '', 
+        descricao: '', 
+        origem_id: '', 
+        destino: 'Dividir', 
+        categoria_id: '' 
+      });
       setIsDespesaModalOpen(false);
       fetchData();
+      setToast('Despesa adicionada com sucesso!');
     } catch (err: any) {
       setError(err.message || 'Erro ao adicionar despesa. Verifique os campos obrigatórios.');
     }
@@ -950,25 +1075,41 @@ CSV com colunas:
 
   const handleAddSalario = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    const valorNum = parseFloat(newSalario.valor);
+    const recebedorIdNum = parseInt(newSalario.recebedor_id);
+
+    if (isNaN(valorNum) || isNaN(recebedorIdNum)) {
+      setError('Por favor, preencha todos os campos obrigatórios com valores válidos.');
+      return;
+    }
+
     try {
       const res = await fetch('/api/salarios', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           ...newSalario, 
-          valor: parseFloat(newSalario.valor), 
-          recebedor_id: parseInt(newSalario.recebedor_id) 
+          valor: valorNum, 
+          recebedor_id: recebedorIdNum 
         }),
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Falha ao salvar salário');
+        throw new Error(data.error || 'Falha ao salvar entrada');
       }
-      setNewSalario({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', recebedor_id: '' });
+      // Reset all fields
+      setNewSalario({ 
+        data: format(new Date(), 'yyyy-MM-dd'), 
+        valor: '', 
+        descricao: '', 
+        recebedor_id: '' 
+      });
       setIsSalarioModalOpen(false);
       fetchData();
+      setToast('Entrada adicionada com sucesso!');
     } catch (err: any) {
-      setError(err.message || 'Erro ao adicionar salário. Verifique os campos.');
+      setError(err.message || 'Erro ao adicionar entrada. Verifique os campos.');
     }
   };
 
@@ -985,10 +1126,50 @@ CSV com colunas:
         throw new Error(data.error || 'Falha ao salvar categoria');
       }
       setNewCategoria({ nome: '' });
-      setIsCategoriaModalOpen(false);
       fetchData();
+      setToast('Categoria adicionada com sucesso!');
     } catch (err: any) {
       setError(err.message || 'Erro ao adicionar categoria.');
+    }
+  };
+
+  const handleUpdateCategoria = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCategoria) return;
+    try {
+      const res = await fetch(`/api/categorias/${editingCategoria.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome: editingCategoria.nome }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Falha ao atualizar categoria');
+      }
+      setEditingCategoria(null);
+      fetchData();
+      setToast('Categoria atualizada com sucesso!');
+    } catch (err: any) {
+      setError(err.message || 'Erro ao atualizar categoria.');
+    }
+  };
+
+  const handleDeleteCategoria = async () => {
+    if (!categoriaToDelete) return;
+    try {
+      const res = await fetch(`/api/categorias/${categoriaToDelete.id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Falha ao excluir categoria');
+      }
+      setIsDeleteCategoriaModalOpen(false);
+      setCategoriaToDelete(null);
+      fetchData();
+      setToast('Categoria excluída com sucesso!');
+    } catch (err: any) {
+      setError(err.message || 'Erro ao excluir categoria.');
     }
   };
 
@@ -1295,7 +1476,7 @@ CSV com colunas:
             <div className="bg-indigo-600 p-2 rounded-xl text-white">
               <DollarSign size={24} />
             </div>
-            <h1 className="text-xl font-bold text-gray-800 tracking-tight">CashTrack</h1>
+            <h1 className="text-xl font-bold text-gray-800 tracking-tight">WithLove4Janis</h1>
           </div>
           
           <nav className="space-y-1">
@@ -1352,18 +1533,6 @@ CSV com colunas:
               label="Prompt Cartao Credito" 
               color="text-pink-600"
               hoverBg="hover:bg-pink-100"
-            />
-            
-            <div className="pt-6 pb-2">
-              <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">Sistema</p>
-            </div>
-            
-            <SidebarButton 
-              onClick={() => setIsLogModalOpen(true)} 
-              icon={<TrendingUp size={20} />} 
-              label="Log" 
-              color="text-gray-600"
-              hoverBg="hover:bg-gray-100"
             />
           </nav>
         </div>
@@ -1506,7 +1675,7 @@ CSV com colunas:
                 <span className="font-bold text-rose-600">{formatCurrency(p.totalSpent)}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-gray-500">Salário Recebido:</span>
+                <span className="text-gray-500">Entrada Recebida:</span>
                 <span className="font-bold text-emerald-600">{formatCurrency(p.totalSalary)}</span>
               </div>
             </div>
@@ -1742,7 +1911,7 @@ CSV com colunas:
         </form>
       </Modal>
 
-      <Modal isOpen={isSalarioModalOpen} onClose={() => setIsSalarioModalOpen(false)} title="Adicionar Salário">
+      <Modal isOpen={isSalarioModalOpen} onClose={() => setIsSalarioModalOpen(false)} title="Adicionar Entrada">
         <form onSubmit={handleAddSalario} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -1773,7 +1942,7 @@ CSV com colunas:
               type="text" 
               value={newSalario.descricao}
               onChange={e => setNewSalario(prev => ({ ...prev, descricao: e.target.value }))}
-              placeholder="Ex: Salário Mensal, Bônus..."
+              placeholder="Ex: Entrada Mensal, Bônus..."
               className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>
@@ -1797,22 +1966,116 @@ CSV com colunas:
         </form>
       </Modal>
 
-      <Modal isOpen={isCategoriaModalOpen} onClose={() => setIsCategoriaModalOpen(false)} title="Adicionar Categoria">
-        <form onSubmit={handleAddCategoria} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Nome da Categoria</label>
-            <input 
-              type="text" 
-              required
-              value={newCategoria.nome}
-              onChange={e => setNewCategoria(prev => ({ ...prev, nome: e.target.value }))}
-              className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
-            />
+      <Modal isOpen={isCategoriaModalOpen} onClose={() => setIsCategoriaModalOpen(false)} title="Gerenciar Categorias">
+        <div className="space-y-6">
+          <form onSubmit={editingCategoria ? handleUpdateCategoria : handleAddCategoria} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">
+                {editingCategoria ? 'Editar Categoria' : 'Nova Categoria'}
+              </label>
+              <div className="mt-1 flex gap-2">
+                <input 
+                  type="text" 
+                  required
+                  value={editingCategoria ? editingCategoria.nome : newCategoria.nome}
+                  onChange={e => editingCategoria 
+                    ? setEditingCategoria({ ...editingCategoria, nome: e.target.value })
+                    : setNewCategoria({ nome: e.target.value })
+                  }
+                  placeholder="Ex: Alimentação, Transporte..."
+                  className="flex-1 rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button 
+                  type="submit" 
+                  className={cn(
+                    "rounded-xl px-6 font-bold text-white transition-all active:scale-95",
+                    editingCategoria ? "bg-indigo-600 hover:bg-indigo-700" : "bg-amber-600 hover:bg-amber-700"
+                  )}
+                >
+                  {editingCategoria ? 'Atualizar' : 'Adicionar'}
+                </button>
+                {editingCategoria && (
+                  <button 
+                    type="button"
+                    onClick={() => setEditingCategoria(null)}
+                    className="rounded-xl bg-gray-100 px-4 font-bold text-gray-600 hover:bg-gray-200 transition-all active:scale-95"
+                  >
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            </div>
+          </form>
+
+          <div className="space-y-3">
+            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Categorias Existentes</h3>
+            <div className="max-h-[300px] overflow-y-auto custom-scrollbar rounded-xl border border-gray-100 divide-y divide-gray-50">
+              {categorias.length > 0 ? (
+                categorias.map(cat => (
+                  <div key={cat.id} className="flex items-center justify-between p-3 hover:bg-gray-50 transition-colors group">
+                    <span className="font-medium text-gray-700">{cat.nome}</span>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                      <button 
+                        onClick={() => setEditingCategoria({ id: cat.id, nome: cat.nome })}
+                        className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                        title="Editar"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setCategoriaToDelete(cat);
+                          setIsDeleteCategoriaModalOpen(true);
+                        }}
+                        className="p-2 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                        title="Excluir"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="p-8 text-center text-gray-400 italic">
+                  Nenhuma categoria cadastrada.
+                </div>
+              )}
+            </div>
           </div>
-          <button type="submit" className="w-full rounded-xl bg-amber-600 py-3 text-white font-bold shadow-soft hover:bg-amber-700 hover:shadow-lg hover:scale-[1.02] transition-all active:scale-[0.98]">
-            Salvar
-          </button>
-        </form>
+        </div>
+      </Modal>
+
+      <Modal isOpen={isDeleteCategoriaModalOpen} onClose={() => setIsDeleteCategoriaModalOpen(false)} title="Confirmar Exclusão">
+        <div className="space-y-6">
+          <div className="flex items-center gap-4 text-rose-600">
+            <div className="rounded-full bg-rose-100 p-3">
+              <AlertTriangle size={24} />
+            </div>
+            <div>
+              <h3 className="font-bold">Excluir Categoria?</h3>
+              <p className="text-sm text-gray-600">
+                Você está prestes a excluir a categoria <strong>{categoriaToDelete?.nome}</strong>.
+              </p>
+            </div>
+          </div>
+          <p className="text-sm text-gray-500">
+            Esta ação não poderá ser desfeita. A categoria só poderá ser excluída se não houver despesas vinculadas a ela.
+          </p>
+          <div className="flex gap-3">
+            <button 
+              onClick={() => setIsDeleteCategoriaModalOpen(false)}
+              className="flex-1 rounded-xl bg-gray-100 py-3 font-bold text-gray-600 hover:bg-gray-200 transition-all"
+            >
+              Cancelar
+            </button>
+            <button 
+              onClick={handleDeleteCategoria}
+              className="flex-1 rounded-xl bg-rose-600 py-3 font-bold text-white shadow-soft hover:bg-rose-700 transition-all"
+            >
+              Confirmar Exclusão
+            </button>
+          </div>
+        </div>
       </Modal>
 
       <Modal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} title="Importar CSV">
@@ -1848,168 +2111,15 @@ CSV com colunas:
         </div>
       </Modal>
 
-      <Modal isOpen={isLogModalOpen} onClose={() => setIsLogModalOpen(false)} title="Log de Atividades">
-        <div className="space-y-4">
-          <div className="sticky top-[-24px] z-20 bg-white pb-4 pt-2 -mx-6 px-6 border-b border-gray-50">
-            <div className="flex items-center gap-4">
-              <div className="relative flex-1">
-                <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                <input 
-                  type="text" 
-                  placeholder="Buscar em qualquer coluna..."
-                  value={logSearchTerm}
-                  onChange={e => setLogSearchTerm(e.target.value)}
-                  className="w-full rounded-xl border-gray-200 bg-gray-50 py-2 pl-10 pr-4 outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <button
-                onClick={fetchData}
-                disabled={isLoading}
-                className="flex items-center gap-2 rounded-xl bg-amber-50 px-4 py-2 text-sm font-bold text-amber-600 hover:bg-amber-100 transition-all active:scale-95 shadow-sm disabled:opacity-50"
-                title="Atualizar dados"
-              >
-                <RefreshCw size={18} className={isLoading ? 'animate-spin' : ''} />
-                Atualizar
-              </button>
-              <button
-                onClick={() => setIsLogExportModalOpen(true)}
-                className="flex items-center gap-2 rounded-xl bg-indigo-50 px-4 py-2 text-sm font-bold text-indigo-600 hover:bg-indigo-100 transition-all active:scale-95 shadow-sm"
-              >
-                <Download size={18} />
-                Exportar
-              </button>
-              {(logSearchTerm || logSort) && (
-                <button
-                  onClick={() => {
-                    setLogSearchTerm('');
-                    setLogSort(null);
-                  }}
-                  className="flex items-center gap-2 rounded-xl bg-rose-50 px-4 py-2 text-sm font-bold text-rose-600 hover:bg-rose-100 transition-all active:scale-95 shadow-sm"
-                  title="Limpar filtros e ordenação"
-                >
-                  <RotateCcw size={18} />
-                  Limpar
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-gray-100 overflow-hidden">
-            <table className="w-full text-left text-sm">
-              <thead className="sticky top-[48px] bg-gray-100 text-gray-600 z-10">
-                <tr>
-                  <LogTableHeader label="ID" columnKey="dbId" />
-                  <LogTableHeader label="Data" columnKey="formattedDate" />
-                  <LogTableHeader label="Descrição" columnKey="descricao" />
-                  <LogTableHeader label="Categoria" columnKey="categoria" />
-                  <LogTableHeader label="Valor" columnKey="valor" />
-                  <LogTableHeader label="Tipo" columnKey="tipo" />
-                  <LogTableHeader label="Pessoa" columnKey="pessoa" />
-                  <LogTableHeader label="Destino" columnKey="destino" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50 bg-white">
-                {filteredMovements.length > 0 ? (
-                  filteredMovements.map(m => (
-                    <tr key={m.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                        {m.id.startsWith('d-') ? 'S' : 'E'}{m.dbId}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">{m.formattedDate}</td>
-                      <td className="px-4 py-3">{m.descricao}</td>
-                      <td className="px-4 py-3">
-                        <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
-                          {m.categoria}
-                        </span>
-                      </td>
-                      <td className={cn(
-                        "px-4 py-3 font-medium whitespace-nowrap",
-                        m.tipo === 'Entrada' ? "text-emerald-600" : "text-rose-600"
-                      )}>
-                        {formatCurrency(m.valor)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={cn(
-                          "rounded-full px-2 py-1 text-xs font-medium",
-                          m.tipo === 'Entrada' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
-                        )}>
-                          {m.tipo}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">{m.pessoa}</td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="text-gray-500 italic">{m.destino}</span>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-gray-500 italic">
-                      Nenhuma movimentação encontrada.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {filteredAuditLogs.length > 0 && (
-            <div className="mt-8 space-y-4">
-              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
-                <div className="w-1 h-3 bg-amber-500 rounded-full" />
-                Histórico de Alterações
-              </h3>
-              <div className="rounded-xl border border-gray-100 overflow-hidden">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-gray-50 text-gray-600">
-                    <tr>
-                      <th className="px-4 py-2 font-semibold">Data/Hora</th>
-                      <th className="px-4 py-2 font-semibold">ID</th>
-                      <th className="px-4 py-2 font-semibold">Tipo</th>
-                      <th className="px-4 py-2 font-semibold">Pessoa</th>
-                      <th className="px-4 py-2 font-semibold">Registro</th>
-                      <th className="px-4 py-2 font-semibold">De</th>
-                      <th className="px-4 py-2 font-semibold">Para</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50 bg-white">
-                    {filteredAuditLogs.map(log => (
-                      <tr key={log.id} className="text-xs">
-                        <td className="px-4 py-2 text-gray-500">
-                          {format(parseISO(log.timestamp), 'dd/MM/yy HH:mm')}
-                        </td>
-                        <td className="px-4 py-2 font-mono text-[10px] text-gray-400">
-                          {log.tipo === 'Salário' ? 'E' : 'S'}{log.registro_id}
-                        </td>
-                        <td className="px-4 py-2">
-                          <span className={cn(
-                            "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                            log.tipo === 'Salário' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
-                          )}>
-                            {log.tipo}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2 text-gray-600">{log.pessoa_nome || '-'}</td>
-                        <td className="px-4 py-2 font-medium">{log.descricao}</td>
-                        <td className="px-4 py-2 text-rose-600">{formatCurrency(log.valor_antigo)}</td>
-                        <td className="px-4 py-2 text-emerald-600">{formatCurrency(log.valor_novo)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      </Modal>
-
       <Modal 
         isOpen={isPersonDetailModalOpen} 
         onClose={() => {
           setIsPersonDetailModalOpen(false);
           setSelectedPersonId(null);
+          setPersonSearchTerm('');
         }} 
         title={`Resumo: ${selectedPersonDetails?.person.nome || ''}`}
+        className="sm:w-[90%] sm:h-[90%] max-w-none"
       >
         {selectedPersonDetails && (
           <div className="space-y-6">
@@ -2069,8 +2179,19 @@ CSV com colunas:
               </div>
             </div>
 
-            <div className="rounded-xl border border-gray-100 overflow-hidden">
-              <div className="max-h-[400px] overflow-y-auto">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input 
+                type="text" 
+                placeholder="Pesquisar movimentações..."
+                value={personSearchTerm}
+                onChange={(e) => setPersonSearchTerm(e.target.value)}
+                className="w-full rounded-xl border-gray-200 bg-gray-50 py-3 pl-10 pr-4 outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div className="rounded-xl border border-gray-100 overflow-hidden flex-1">
+              <div className="max-h-[60vh] overflow-y-auto custom-scrollbar">
                 <table className="w-full text-left text-sm">
                   <thead className="sticky top-0 bg-gray-100 text-gray-600 z-10">
                     <tr>
@@ -2166,23 +2287,6 @@ CSV com colunas:
         onClose={() => setIsExportModalOpen(false)}
         onExport={handleExportData}
         defaultFilenamePrefix={`Resumo_${(selectedPersonDetails?.person.nome || '').replace(/\s+/g, '_')}`}
-      />
-
-      <ExportModal
-        isOpen={isLogExportModalOpen}
-        onClose={() => setIsLogExportModalOpen(false)}
-        onExport={handleExportLog}
-        title="Exportar Log de Atividades"
-        defaultFilenamePrefix="Log_Atividades"
-        availableColumns={[
-          { id: 'date', label: 'Data' },
-          { id: 'description', label: 'Descrição' },
-          { id: 'category', label: 'Categoria' },
-          { id: 'value', label: 'Valor' },
-          { id: 'type', label: 'Tipo' },
-          { id: 'person', label: 'Pessoa' },
-          { id: 'destination', label: 'Destino' },
-        ]}
       />
 
       <Modal isOpen={isReviewModalOpen} onClose={() => setIsReviewModalOpen(false)} title="Revisar Importação">
@@ -2353,7 +2457,7 @@ CSV com colunas:
         }}
         onConfirm={handleDeletePessoa}
         title="Excluir Pessoa Permanentemente?"
-        message={`ATENÇÃO: Esta ação é irreversível. Ao excluir ${personToDelete?.nome}, TODOS os registros de despesas e salários associados a esta pessoa serão apagados do sistema para sempre. Deseja prosseguir?`}
+        message={`ATENÇÃO: Esta ação é irreversível. Ao excluir ${personToDelete?.nome}, TODOS os registros de despesas e entradas associados a esta pessoa serão apagados do sistema para sempre. Deseja prosseguir?`}
         confirmLabel="Sim, Excluir Tudo"
         cancelLabel="Não, Manter Dados"
         type="danger"
