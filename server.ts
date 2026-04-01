@@ -32,7 +32,8 @@ async function startServer() {
 
       CREATE TABLE IF NOT EXISTS despesas (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        data TEXT NOT NULL,
+        data_compra TEXT NOT NULL,
+        data_pagamento TEXT NOT NULL,
         valor REAL NOT NULL,
         descricao TEXT DEFAULT '',
         origem_id INTEGER NOT NULL,
@@ -44,7 +45,7 @@ async function startServer() {
 
       CREATE TABLE IF NOT EXISTS salarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        data TEXT NOT NULL,
+        data_pagamento TEXT NOT NULL,
         valor REAL NOT NULL,
         descricao TEXT DEFAULT '',
         recebedor_id INTEGER NOT NULL,
@@ -67,6 +68,18 @@ async function startServer() {
     `);
 
     // Ensure columns exist for existing databases
+    try { database.exec("ALTER TABLE despesas ADD COLUMN data_compra TEXT"); } catch (e) {}
+    try { database.exec("ALTER TABLE despesas ADD COLUMN data_pagamento TEXT"); } catch (e) {}
+    try { database.exec("ALTER TABLE salarios ADD COLUMN data_pagamento TEXT"); } catch (e) {}
+    
+    // Migration for old 'data' column
+    try {
+      database.exec(`
+        UPDATE despesas SET data_compra = data, data_pagamento = data WHERE data_compra IS NULL;
+        UPDATE salarios SET data_pagamento = data WHERE data_pagamento IS NULL;
+      `);
+    } catch (e) {}
+
     try { database.exec("ALTER TABLE despesas ADD COLUMN descricao TEXT DEFAULT ''"); } catch (e) {}
     try { database.exec("ALTER TABLE salarios ADD COLUMN descricao TEXT DEFAULT ''"); } catch (e) {}
     try { database.exec("ALTER TABLE logs ADD COLUMN data_registro TEXT"); } catch (e) {}
@@ -75,30 +88,66 @@ async function startServer() {
   };
 
   // Normalize dates in despesas and salarios to YYYY-MM-DD
-  const normalizeDates = (database: Database.Database) => {
-    const tables = [
-      { name: 'despesas', col: 'data' },
-      { name: 'salarios', col: 'data' }
-    ];
-    
-    for (const table of tables) {
-      const records = database.prepare(`SELECT id, ${table.col} FROM ${table.name}`).all();
-      for (const r of records as any[]) {
-        const val = r[table.col];
-        if (val && val.includes('/')) {
-          const parts = val.split('/');
-          if (parts.length === 3) {
-            const [d, m, y] = parts;
-            const normalized = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-            database.prepare(`UPDATE ${table.name} SET ${table.col} = ? WHERE id = ?`).run(normalized, r.id);
+    const normalizeDates = (database: Database.Database) => {
+      const tables = [
+        { name: 'despesas', cols: ['data_compra', 'data_pagamento'] },
+        { name: 'salarios', cols: ['data_pagamento'] }
+      ];
+      
+      for (const table of tables) {
+        for (const col of table.cols) {
+          const records = database.prepare(`SELECT id, ${col} FROM ${table.name} WHERE ${col} IS NOT NULL`).all();
+          for (const r of records as any[]) {
+            const val = r[col];
+            if (val && val.includes('/')) {
+              const parts = val.split('/');
+              if (parts.length === 3) {
+                const [d, m, y] = parts;
+                const normalized = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+                database.prepare(`UPDATE ${table.name} SET ${col} = ? WHERE id = ?`).run(normalized, r.id);
+              }
+            }
           }
         }
       }
+    };
+
+  const seedData = (database: Database.Database) => {
+    const pessoasCount = database.prepare("SELECT COUNT(*) as count FROM pessoas").get().count;
+    if (pessoasCount === 0) {
+      console.log("Seeding example data...");
+      
+      // Insert Pessoas
+      const p1 = database.prepare("INSERT INTO pessoas (nome, cor) VALUES (?, ?)").run("Wallace", "#4f46e5");
+      const p2 = database.prepare("INSERT INTO pessoas (nome, cor) VALUES (?, ?)").run("Janis", "#ec4899");
+      
+      // Insert Categorias
+      const c1 = database.prepare("INSERT INTO categorias (nome) VALUES (?)").run("Alimentação");
+      const c2 = database.prepare("INSERT INTO categorias (nome) VALUES (?)").run("Lazer");
+      const c3 = database.prepare("INSERT INTO categorias (nome) VALUES (?)").run("Transporte");
+      const c4 = database.prepare("INSERT INTO categorias (nome) VALUES (?)").run("Aluguel");
+      
+      const today = new Date().toISOString().split('T')[0];
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+      
+      // Insert Salarios (Entradas)
+      database.prepare("INSERT INTO salarios (data_pagamento, valor, descricao, recebedor_id) VALUES (?, ?, ?, ?)").run(yesterday, 5000, "Salário Mensal", p1.lastInsertRowid);
+      database.prepare("INSERT INTO salarios (data_pagamento, valor, descricao, recebedor_id) VALUES (?, ?, ?, ?)").run(yesterday, 4500, "Salário Mensal", p2.lastInsertRowid);
+      
+      // Insert Despesas (Saídas)
+      database.prepare("INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(today, today, 150, "Jantar", p1.lastInsertRowid, "Dividir", c1.lastInsertRowid);
+      database.prepare("INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(today, today, 80, "Cinema", p2.lastInsertRowid, "Dividir", c2.lastInsertRowid);
+      database.prepare("INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(yesterday, yesterday, 2000, "Aluguel Apartamento", p1.lastInsertRowid, "Dividir", c4.lastInsertRowid);
+      database.prepare("INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(yesterday, yesterday, 50, "Uber", p2.lastInsertRowid, p1.lastInsertRowid.toString(), c3.lastInsertRowid);
+      database.prepare("INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(yesterday, yesterday, 120, "Supermercado", p1.lastInsertRowid, "Dividir", c1.lastInsertRowid);
+      database.prepare("INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(today, today, 45, "Farmácia", p2.lastInsertRowid, "Dividir", c1.lastInsertRowid);
+      database.prepare("INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(today, today, 200, "Presente", p1.lastInsertRowid, p2.lastInsertRowid.toString(), c2.lastInsertRowid);
     }
   };
 
   initDb(db);
   normalizeDates(db);
+  seedData(db);
 
   // Backup endpoint
   app.get("/api/backup", (req, res) => {
@@ -153,6 +202,24 @@ async function startServer() {
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: "Erro ao restaurar backup" });
+    }
+  });
+
+  // Reset endpoint
+  app.post("/api/reset", (req, res) => {
+    try {
+      db.exec(`
+        DELETE FROM despesas;
+        DELETE FROM salarios;
+        DELETE FROM pessoas;
+        DELETE FROM categorias;
+        DELETE FROM logs;
+        DELETE FROM sqlite_sequence WHERE name IN ('despesas', 'salarios', 'pessoas', 'categorias', 'logs');
+      `);
+      res.json({ success: true });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Erro ao resetar dados" });
     }
   });
 
@@ -255,9 +322,9 @@ async function startServer() {
   });
 
   app.post("/api/despesas", (req, res) => {
-    const { data, valor, descricao, origem_id, destino, categoria_id } = req.body;
+    const { data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id } = req.body;
     
-    if (!data || isNaN(Number(valor)) || !origem_id || !categoria_id) {
+    if (!data_compra || !data_pagamento || isNaN(Number(valor)) || !origem_id || !categoria_id) {
       return res.status(400).json({ error: "Dados incompletos ou inválidos (valor, origem ou categoria)." });
     }
 
@@ -266,23 +333,23 @@ async function startServer() {
     // Check for duplicate
     const existing = db.prepare(`
       SELECT id FROM despesas 
-      WHERE data = ? AND valor = ? AND descricao = ? AND origem_id = ? AND destino = ? AND categoria_id = ?
-    `).get(data, roundedValor, descricao || '', origem_id, destino, categoria_id);
+      WHERE data_compra = ? AND data_pagamento = ? AND valor = ? AND descricao = ? AND origem_id = ? AND destino = ? AND categoria_id = ?
+    `).get(data_compra, data_pagamento, roundedValor, descricao || '', origem_id, destino, categoria_id);
 
     if (existing) {
       return res.status(400).json({ error: "Esta despesa já foi lançada (duplicada)." });
     }
 
     const result = db.prepare(
-      "INSERT INTO despesas (data, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(data, roundedValor, descricao || '', origem_id, destino, categoria_id);
+      "INSERT INTO despesas (data_compra, data_pagamento, valor, descricao, origem_id, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(data_compra, data_pagamento, roundedValor, descricao || '', origem_id, destino, categoria_id);
 
     // Log the creation
     db.prepare(
       "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id, data_registro, destino, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(new Date().toISOString(), `Lançamento inicial: Saída S${result.lastInsertRowid} - ${descricao || 'Despesa'}`, 0, roundedValor, 'Despesa', result.lastInsertRowid, origem_id, data, destino, categoria_id);
+    ).run(new Date().toISOString(), `Lançamento inicial: Saída S${result.lastInsertRowid} - ${descricao || 'Despesa'}`, 0, roundedValor, 'Despesa', result.lastInsertRowid, origem_id, data_pagamento, destino, categoria_id);
 
-    res.json({ id: result.lastInsertRowid, data, valor: roundedValor, descricao, origem_id, destino, categoria_id });
+    res.json({ id: result.lastInsertRowid, data_compra, data_pagamento, valor: roundedValor, descricao, origem_id, destino, categoria_id });
   });
 
   app.get("/api/salarios", (req, res) => {
@@ -295,9 +362,9 @@ async function startServer() {
   });
 
   app.post("/api/salarios", (req, res) => {
-    const { data, valor, descricao, recebedor_id } = req.body;
+    const { data_pagamento, valor, descricao, recebedor_id } = req.body;
     
-    if (!data || isNaN(Number(valor)) || !recebedor_id) {
+    if (!data_pagamento || isNaN(Number(valor)) || !recebedor_id) {
       return res.status(400).json({ error: "Dados incompletos ou inválidos (valor ou recebedor)." });
     }
 
@@ -306,49 +373,62 @@ async function startServer() {
     // Check for duplicate
     const existing = db.prepare(`
       SELECT id FROM salarios 
-      WHERE data = ? AND valor = ? AND descricao = ? AND recebedor_id = ?
-    `).get(data, roundedValor, descricao || '', recebedor_id);
+      WHERE data_pagamento = ? AND valor = ? AND descricao = ? AND recebedor_id = ?
+    `).get(data_pagamento, roundedValor, descricao || '', recebedor_id);
 
     if (existing) {
       return res.status(400).json({ error: "Este lançamento de entrada já existe (duplicado)." });
     }
 
     const result = db.prepare(
-      "INSERT INTO salarios (data, valor, descricao, recebedor_id) VALUES (?, ?, ?, ?)"
-    ).run(data, roundedValor, descricao || '', recebedor_id);
+      "INSERT INTO salarios (data_pagamento, valor, descricao, recebedor_id) VALUES (?, ?, ?, ?)"
+    ).run(data_pagamento, roundedValor, descricao || '', recebedor_id);
 
     // Log the creation
     db.prepare(
       "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id, data_registro, destino) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(new Date().toISOString(), `Lançamento inicial: Entrada E${result.lastInsertRowid} - ${descricao || 'Entrada'}`, 0, roundedValor, 'Entrada', result.lastInsertRowid, recebedor_id, data, 'Entrada');
+    ).run(new Date().toISOString(), `Lançamento inicial: Entrada E${result.lastInsertRowid} - ${descricao || 'Entrada'}`, 0, roundedValor, 'Entrada', result.lastInsertRowid, recebedor_id, data_pagamento, 'Entrada');
 
-    res.json({ id: result.lastInsertRowid, data, valor: roundedValor, descricao, recebedor_id });
+    res.json({ id: result.lastInsertRowid, data_pagamento, valor: roundedValor, descricao, recebedor_id });
   });
 
   app.patch("/api/despesas/:id", (req, res) => {
     const { id } = req.params;
-    const { valor } = req.body;
-
-    if (isNaN(Number(valor))) {
-      return res.status(400).json({ error: "Valor inválido." });
-    }
-
-    const roundedValor = Math.round(Number(valor) * 100) / 100;
+    const { valor, categoria_id } = req.body;
 
     try {
-      const oldRecord = db.prepare("SELECT valor, descricao, origem_id FROM despesas WHERE id = ?").get(id) as any;
+      const oldRecord = db.prepare("SELECT valor, descricao, origem_id, categoria_id FROM despesas WHERE id = ?").get(id) as any;
       if (!oldRecord) return res.status(404).json({ error: "Despesa não encontrada" });
 
-      db.prepare("UPDATE despesas SET valor = ? WHERE id = ?").run(roundedValor, id);
-      
-      // Log the change
-      db.prepare(
-        "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      ).run(new Date().toISOString(), `Alteração de valor: Saída S${id} - ${oldRecord.descricao}`, oldRecord.valor, roundedValor, 'Despesa', id, oldRecord.origem_id);
+      if (valor !== undefined) {
+        if (isNaN(Number(valor))) {
+          return res.status(400).json({ error: "Valor inválido." });
+        }
+        const roundedValor = Math.round(Number(valor) * 100) / 100;
+        db.prepare("UPDATE despesas SET valor = ? WHERE id = ?").run(roundedValor, id);
+        
+        // Log the change
+        db.prepare(
+          "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(new Date().toISOString(), `Alteração de valor: Saída S${id} - ${oldRecord.descricao}`, oldRecord.valor, roundedValor, 'Despesa', id, oldRecord.origem_id);
+      }
 
-      res.json({ success: true, valor: roundedValor });
+      if (categoria_id !== undefined) {
+        db.prepare("UPDATE despesas SET categoria_id = ? WHERE id = ?").run(categoria_id, id);
+        
+        const oldCat = db.prepare("SELECT nome FROM categorias WHERE id = ?").get(oldRecord.categoria_id) as any;
+        const newCat = db.prepare("SELECT nome FROM categorias WHERE id = ?").get(categoria_id) as any;
+        
+        // Log the change
+        db.prepare(
+          "INSERT INTO logs (timestamp, descricao, valor_antigo, valor_novo, tipo, registro_id, pessoa_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(new Date().toISOString(), `Alteração de categoria: Saída S${id} - ${oldRecord.descricao} (${oldCat?.nome || 'Sem Categoria'} -> ${newCat?.nome || 'Sem Categoria'})`, 0, 0, 'Despesa', id, oldRecord.origem_id);
+      }
+
+      res.json({ success: true });
     } catch (e) {
-      res.status(500).json({ error: "Erro ao atualizar valor da despesa." });
+      console.error(e);
+      res.status(500).json({ error: "Erro ao atualizar despesa." });
     }
   });
 

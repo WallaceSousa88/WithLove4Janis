@@ -34,22 +34,7 @@ const formatCurrency = (value: number) => {
 };
 
 const renderActiveShape = (props: any) => {
-  const RADIAN = Math.PI / 180;
-  const { cx, cy, midAngle, innerRadius, outerRadius, startAngle, endAngle, fill, payload, percent, value } = props;
-  const sin = Math.sin(-RADIAN * midAngle);
-  const cos = Math.cos(-RADIAN * midAngle);
-  const sx = cx + (outerRadius + 10) * cos;
-  const sy = cy + (outerRadius + 10) * sin;
-  const mx = cx + (outerRadius + 30) * cos;
-  const my = cy + (outerRadius + 30) * sin;
-  const ex = mx + (cos >= 0 ? 1 : -1) * 22;
-  const ey = my;
-  const textAnchor = cos >= 0 ? 'start' : 'end';
-
-  const label = `${payload.name} (${formatCurrency(value)}) - ${(percent * 100).toFixed(0)}%`;
-  // Dynamic font size calculation based on string length to prevent overflow
-  // Base size 14, minimum 11
-  const dynamicFontSize = Math.max(12, Math.min(16, 16 * (24 / Math.max(24, label.length))));
+  const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill, payload, percent, value } = props;
 
   return (
     <g>
@@ -71,18 +56,15 @@ const renderActiveShape = (props: any) => {
         outerRadius={outerRadius + 10}
         fill={fill}
       />
-      <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" />
-      <circle cx={ex} cy={ey} r={2} fill={fill} stroke="none" />
       <text 
-        x={ex + (cos >= 0 ? 1 : -1) * 12} 
-        y={ey} 
-        textAnchor={textAnchor} 
-        fill="#111827" 
-        fontSize={dynamicFontSize}
-        fontWeight="600"
-        className="drop-shadow-[0_1px_1px_rgba(255,255,255,0.8)]"
+        x={cx} 
+        y={cy} 
+        textAnchor="middle" 
+        dominantBaseline="central"
       >
-        {label}
+        <tspan x={cx} dy="-1.4em" fontSize={11} fill="#6b7280" fontWeight="500">{payload.name}</tspan>
+        <tspan x={cx} dy="1.4em" fontSize={16} fill="#111827" fontWeight="700">{formatCurrency(value)}</tspan>
+        <tspan x={cx} dy="1.4em" fontSize={11} fill="#6b7280" fontWeight="500">{(percent * 100).toFixed(0)}%</tspan>
       </text>
     </g>
   );
@@ -135,15 +117,19 @@ export default function App() {
   const [isDeletePessoaModalOpen, setIsDeletePessoaModalOpen] = useState(false);
   const [personToDelete, setPersonToDelete] = useState<Pessoa | null>(null);
   const [isRestoreConfirmOpen, setIsRestoreConfirmOpen] = useState(false);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const [pendingRestoreFile, setPendingRestoreFile] = useState<File | null>(null);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [reviewItems, setReviewItems] = useState<any[]>([]);
+  const [importSource, setImportSource] = useState<'extrato' | 'cartao'>('extrato');
+  const [globalPaymentDate, setGlobalPaymentDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [editingRecord, setEditingRecord] = useState<{ id: string; type: 'Entrada' | 'Saída'; value: string } | null>(null);
+  const [editingRecordCategory, setEditingRecordCategory] = useState<{ id: string; categoryId: number } | null>(null);
   const [personSearchTerm, setPersonSearchTerm] = useState('');
 
   useEffect(() => {
@@ -280,8 +266,21 @@ CSV com colunas:
 
   // Form states
   const [newPessoa, setNewPessoa] = useState({ nome: '', cor: '' });
-  const [newDespesa, setNewDespesa] = useState({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', origem_id: '', destino: 'Dividir', categoria_id: '' });
-  const [newSalario, setNewSalario] = useState({ data: format(new Date(), 'yyyy-MM-dd'), valor: '', descricao: '', recebedor_id: '' });
+  const [newDespesa, setNewDespesa] = useState({ 
+    data_compra: format(new Date(), 'yyyy-MM-dd'), 
+    data_pagamento: format(new Date(), 'yyyy-MM-dd'), 
+    valor: '', 
+    descricao: '', 
+    origem_id: '', 
+    destino: 'Dividir', 
+    categoria_id: '' 
+  });
+  const [newSalario, setNewSalario] = useState({ 
+    data_pagamento: format(new Date(), 'yyyy-MM-dd'), 
+    valor: '', 
+    descricao: '', 
+    recebedor_id: '' 
+  });
   const [newCategoria, setNewCategoria] = useState({ nome: '' });
   const [importPessoaId, setImportPessoaId] = useState('');
   const [logSearchTerm, setLogSearchTerm] = useState('');
@@ -335,6 +334,27 @@ CSV com colunas:
   useEffect(() => {
     fetchData();
   }, []);
+
+  const handleUpdateCategory = async (id: string, newCategoryId: number) => {
+    setIsLoading(true);
+    try {
+      const despesaId = id.split('-')[1];
+      const res = await fetch(`/api/despesas/${despesaId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria_id: newCategoryId })
+      });
+      if (!res.ok) throw new Error('Erro ao atualizar categoria');
+      
+      setToast('Categoria atualizada com sucesso!');
+      setEditingRecordCategory(null);
+      await fetchData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao atualizar categoria');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleUpdateValue = async () => {
     if (!editingRecord) return;
@@ -390,11 +410,11 @@ CSV com colunas:
   const availableYears = useMemo(() => {
     const years = new Set<number>();
     despesas.forEach(d => {
-      const date = parseISO(d.data);
+      const date = parseISO(d.data_pagamento);
       if (!isNaN(date.getTime())) years.add(getYear(date));
     });
     salarios.forEach(s => {
-      const date = parseISO(s.data);
+      const date = parseISO(s.data_pagamento);
       if (!isNaN(date.getTime())) years.add(getYear(date));
     });
     return Array.from(years).sort((a, b) => b - a);
@@ -402,7 +422,10 @@ CSV com colunas:
 
   const availableMonths = useMemo(() => {
     const months = new Set<number>();
-    const items = [...despesas, ...salarios];
+    const items = [
+      ...despesas.map(d => ({ data: d.data_pagamento })),
+      ...salarios.map(s => ({ data: s.data_pagamento }))
+    ];
     items.forEach(item => {
       const date = parseISO(item.data);
       if (!isNaN(date.getTime())) {
@@ -416,9 +439,9 @@ CSV com colunas:
 
   const filteredDespesas = useMemo(() => {
     return despesas.filter(d => {
-      const date = parseISO(d.data);
+      const date = parseISO(d.data_pagamento);
       if (isNaN(date.getTime())) return true; // Keep invalid dates to show them
-      const dateStr = d.data;
+      const dateStr = d.data_pagamento;
       const m = getMonth(date);
       const y = getYear(date);
 
@@ -433,9 +456,9 @@ CSV com colunas:
 
   const filteredSalarios = useMemo(() => {
     return salarios.filter(s => {
-      const date = parseISO(s.data);
+      const date = parseISO(s.data_pagamento);
       if (isNaN(date.getTime())) return true;
-      const dateStr = s.data;
+      const dateStr = s.data_pagamento;
       const m = getMonth(date);
       const y = getYear(date);
 
@@ -544,25 +567,29 @@ CSV com colunas:
 
     let movements = [
       ...pDespesas.map(d => {
-        const dateObj = parseISO(d.data);
+        const dateObj = parseISO(d.data_pagamento);
         const isValidDate = !isNaN(dateObj.getTime());
         return { 
           ...d, 
           id: `despesa-${d.id}`,
           tipo: 'Saída', 
-          displayData: d.data,
-          formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data
+          displayData: d.data_pagamento,
+          data_compra: d.data_compra || d.data_pagamento,
+          formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data_pagamento,
+          formattedCompraDate: d.data_compra ? format(parseISO(d.data_compra), 'dd/MM/yyyy') : (isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data_pagamento)
         };
       }),
       ...pSalarios.map(s => {
-        const dateObj = parseISO(s.data);
+        const dateObj = parseISO(s.data_pagamento);
         const isValidDate = !isNaN(dateObj.getTime());
         return { 
           ...s, 
           id: `salario-${s.id}`,
           tipo: 'Entrada', 
-          displayData: s.data,
-          formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data
+          displayData: s.data_pagamento,
+          data_compra: s.data_pagamento,
+          formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data_pagamento,
+          formattedCompraDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data_pagamento
         };
       })
     ].sort((a, b) => b.displayData.localeCompare(a.displayData));
@@ -586,6 +613,8 @@ CSV com colunas:
           valorFixed.replace('.', ',').includes(term) ||
           valorFormatted.includes(term) ||
           m.formattedDate.includes(term) ||
+          (m.data_compra && m.data_compra.includes(term)) ||
+          (m.formattedCompraDate && m.formattedCompraDate.includes(term)) ||
           normalize(m.tipo).includes(term);
       });
     }
@@ -607,7 +636,10 @@ CSV com colunas:
   }, [selectedPersonId, pessoas, filteredDespesas, filteredSalarios, personSearchTerm]);
 
   const barChartData = useMemo(() => {
-    const items = [...filteredDespesas, ...filteredSalarios];
+    const items = [
+      ...filteredDespesas.map(d => ({ ...d, data: d.data_pagamento })),
+      ...filteredSalarios.map(s => ({ ...s, data: s.data_pagamento }))
+    ];
     if (items.length === 0) return [];
 
     // Determine the range
@@ -643,7 +675,7 @@ CSV com colunas:
       const days = eachDayOfInterval({ start, end });
       return days.map(day => {
         const dayStr = format(day, 'yyyy-MM-dd');
-        const dayDespesas = filteredDespesas.filter(d => d.data === dayStr);
+        const dayDespesas = filteredDespesas.filter(d => d.data_pagamento === dayStr);
         
         const data: any = { day: format(day, 'dd/MM') };
         pessoas.forEach(p => {
@@ -661,7 +693,7 @@ CSV com colunas:
       // Show months
       const months = eachMonthOfInterval({ start, end });
       return months.map(month => {
-        const monthDespesas = filteredDespesas.filter(d => isSameMonth(parseISO(d.data), month));
+        const monthDespesas = filteredDespesas.filter(d => isSameMonth(parseISO(d.data_pagamento), month));
         const data: any = { day: format(month, 'MMM/yy', { locale: ptBR }) };
         pessoas.forEach(p => {
           data[p.nome] = monthDespesas
@@ -677,7 +709,7 @@ CSV com colunas:
       // Show years
       const years = eachYearOfInterval({ start, end });
       return years.map(year => {
-        const yearDespesas = filteredDespesas.filter(d => isSameYear(parseISO(d.data), year));
+        const yearDespesas = filteredDespesas.filter(d => isSameYear(parseISO(d.data_pagamento), year));
         const data: any = { day: format(year, 'yyyy') };
         pessoas.forEach(p => {
           data[p.nome] = yearDespesas
@@ -729,13 +761,13 @@ CSV com colunas:
     };
 
     // 1. Current records from despesas and salarios (using raw despesas/salarios but applying same filtering logic)
-    const mDespesas = despesas.filter(d => matchesFilters(d.data)).map(d => {
+    const mDespesas = despesas.filter(d => matchesFilters(d.data_pagamento)).map(d => {
       let destinoLabel = d.destino;
       if (d.destino !== 'Dividir') {
         const p = pessoas.find(p => Number(p.id) === Number(d.destino));
         destinoLabel = p ? p.nome : d.destino;
       }
-      const dateObj = parseISO(d.data);
+      const dateObj = parseISO(d.data_pagamento);
       const isValidDate = !isNaN(dateObj.getTime());
       
       // Get initial value from logs if available
@@ -744,10 +776,13 @@ CSV com colunas:
       
       return {
         id: `d-${d.id}`,
-        data: d.data,
+        data: d.data_pagamento,
+        data_compra: d.data_compra || d.data_pagamento,
+        data_pagamento: d.data_pagamento,
         dateObj,
         isValidDate,
-        formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data,
+        formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data_pagamento,
+        formattedCompraDate: d.data_compra ? format(parseISO(d.data_compra), 'dd/MM/yyyy') : (isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data_pagamento),
         month: isValidDate ? getMonth(dateObj) + 1 : 0,
         monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
         monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
@@ -764,8 +799,8 @@ CSV com colunas:
       };
     });
 
-    const mSalarios = salarios.filter(s => matchesFilters(s.data)).map(s => {
-      const dateObj = parseISO(s.data);
+    const mSalarios = salarios.filter(s => matchesFilters(s.data_pagamento)).map(s => {
+      const dateObj = parseISO(s.data_pagamento);
       const isValidDate = !isNaN(dateObj.getTime());
       
       // Get initial value from logs if available
@@ -774,10 +809,13 @@ CSV com colunas:
       
       return {
         id: `s-${s.id}`,
-        data: s.data,
+        data: s.data_pagamento,
+        data_compra: s.data_pagamento,
+        data_pagamento: s.data_pagamento,
         dateObj,
         isValidDate,
-        formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data,
+        formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data_pagamento,
+        formattedCompraDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data_pagamento,
         month: isValidDate ? getMonth(dateObj) + 1 : 0,
         monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
         monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
@@ -823,9 +861,12 @@ CSV com colunas:
       return {
         id: `${l.tipo === 'Despesa' ? 'd' : 's'}-${l.registro_id}`,
         data: dateStr,
+        data_compra: dateStr,
+        data_pagamento: dateStr,
         dateObj,
         isValidDate,
         formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : dateStr,
+        formattedCompraDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : dateStr,
         month: isValidDate ? getMonth(dateObj) + 1 : 0,
         monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
         monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
@@ -855,9 +896,12 @@ CSV com colunas:
       return {
         id: `${l.tipo === 'Pessoa' ? 'p' : 'c'}-${l.registro_id}`,
         data: dateStr,
+        data_compra: dateStr,
+        data_pagamento: dateStr,
         dateObj,
         isValidDate,
         formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : dateStr,
+        formattedCompraDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : dateStr,
         month: isValidDate ? getMonth(dateObj) + 1 : 0,
         monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
         monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : '',
@@ -920,6 +964,8 @@ CSV com colunas:
           m.dbId.toString().includes(term) ||
           m.data.includes(term) ||
           m.formattedDate.includes(term) ||
+          (m.data_compra && m.data_compra.includes(term)) ||
+          (m.formattedCompraDate && m.formattedCompraDate.includes(term)) ||
           normalize(m.monthName).includes(term) ||
           normalize(m.monthNameShort).includes(term) ||
           normalize(m.descricao).includes(term) ||
@@ -1061,7 +1107,8 @@ CSV com colunas:
       }
       // Reset all fields
       setNewDespesa({ 
-        data: format(new Date(), 'yyyy-MM-dd'), 
+        data_compra: format(new Date(), 'yyyy-MM-dd'), 
+        data_pagamento: format(new Date(), 'yyyy-MM-dd'), 
         valor: '', 
         descricao: '', 
         origem_id: '', 
@@ -1103,7 +1150,7 @@ CSV com colunas:
       }
       // Reset all fields
       setNewSalario({ 
-        data: format(new Date(), 'yyyy-MM-dd'), 
+        data_pagamento: format(new Date(), 'yyyy-MM-dd'), 
         valor: '', 
         descricao: '', 
         recebedor_id: '' 
@@ -1195,6 +1242,23 @@ CSV com colunas:
     }
   };
 
+  const handleResetData = async () => {
+    setIsLoading(true);
+    setLoadingMessage('Limpando todos os dados...');
+    try {
+      const response = await fetch('/api/reset', { method: 'POST' });
+      if (!response.ok) throw new Error('Erro ao resetar dados');
+      
+      setToast('Dados limpos com sucesso!');
+      await fetchData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro desconhecido');
+    } finally {
+      setIsLoading(false);
+      setIsResetConfirmOpen(false);
+    }
+  };
+
   const handleDownloadBackup = () => {
     window.location.href = '/api/backup';
   };
@@ -1275,7 +1339,8 @@ CSV com colunas:
 
         items.push({
           id: Math.random().toString(36).substr(2, 9),
-          data: formattedDate,
+          data_compra: formattedDate,
+          data_pagamento: importSource === 'extrato' ? formattedDate : globalPaymentDate,
           descricao: descricao.trim(),
           categoria: categoriaNome.trim(),
           valor,
@@ -1329,7 +1394,7 @@ CSV com colunas:
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              data: item.data,
+              data_pagamento: item.data_pagamento,
               valor: item.valor,
               descricao: item.descricao,
               recebedor_id: parseInt(importPessoaId)
@@ -1348,7 +1413,8 @@ CSV com colunas:
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                data: item.data,
+                data_compra: item.data_compra,
+                data_pagamento: item.data_pagamento,
                 valor: item.valor,
                 descricao: item.descricao,
                 origem_id: parseInt(importPessoaId),
@@ -1386,8 +1452,9 @@ CSV com colunas:
     const worksheet = workbook.addWorksheet('Resumo');
 
     const columns: any[] = [];
-    if (options.columns.includes('date')) columns.push({ header: 'Data', key: 'date', width: 15 });
-    if (options.columns.includes('description')) columns.push({ header: 'Descrição', key: 'description', width: 30 });
+    if (options.columns.includes('date')) columns.push({ header: 'Data Pagamento', key: 'date', width: 15 });
+    if (options.columns.includes('date_compra')) columns.push({ header: 'Data Compra', key: 'date_compra', width: 15 });
+    if (options.columns.includes('description')) columns.push({ header: 'Descrição', key: 'description', width: 35 });
     if (options.columns.includes('category')) columns.push({ header: 'Categoria', key: 'category', width: 20 });
     if (options.columns.includes('value')) columns.push({ header: 'Valor', key: 'value', width: 15 });
     if (options.columns.includes('type')) columns.push({ header: 'Tipo', key: 'type', width: 15 });
@@ -1395,7 +1462,8 @@ CSV com colunas:
 
     selectedPersonDetails.movements.forEach((m: any) => {
       const row: any = {};
-      if (options.columns.includes('date')) row['date'] = format(parseISO(m.displayData), 'dd/MM/yyyy');
+      if (options.columns.includes('date')) row['date'] = m.formattedDate;
+      if (options.columns.includes('date_compra')) row['date_compra'] = m.formattedCompraDate;
       if (options.columns.includes('description')) row['description'] = m.descricao;
       if (options.columns.includes('category')) row['category'] = m.categoria_nome || '-';
       if (options.columns.includes('value')) row['value'] = m.valor;
@@ -1417,8 +1485,9 @@ CSV com colunas:
     const worksheet = workbook.addWorksheet('Log_Atividades');
 
     const columns: any[] = [];
-    if (options.columns.includes('date')) columns.push({ header: 'Data', key: 'date', width: 15 });
-    if (options.columns.includes('description')) columns.push({ header: 'Descrição', key: 'description', width: 30 });
+    if (options.columns.includes('date')) columns.push({ header: 'Data Pagamento', key: 'date', width: 15 });
+    if (options.columns.includes('date_compra')) columns.push({ header: 'Data Compra', key: 'date_compra', width: 15 });
+    if (options.columns.includes('description')) columns.push({ header: 'Descrição', key: 'description', width: 35 });
     if (options.columns.includes('category')) columns.push({ header: 'Categoria', key: 'category', width: 20 });
     if (options.columns.includes('value')) columns.push({ header: 'Valor', key: 'value', width: 15 });
     if (options.columns.includes('type')) columns.push({ header: 'Tipo', key: 'type', width: 15 });
@@ -1428,7 +1497,8 @@ CSV com colunas:
 
     filteredMovements.forEach((m: any) => {
       const row: any = {};
-      if (options.columns.includes('date')) row['date'] = format(parseISO(m.data), 'dd/MM/yyyy');
+      if (options.columns.includes('date')) row['date'] = m.formattedDate;
+      if (options.columns.includes('date_compra')) row['date_compra'] = m.formattedCompraDate;
       if (options.columns.includes('description')) row['description'] = m.descricao;
       if (options.columns.includes('category')) row['category'] = m.categoria || '-';
       if (options.columns.includes('value')) row['value'] = m.valor;
@@ -1486,14 +1556,14 @@ CSV com colunas:
             <SidebarButton 
               onClick={() => setIsPessoaModalOpen(true)} 
               icon={<Users size={20} />} 
-              label="Adicionar Pessoa" 
+              label="Gerenciar Pessoas" 
               color="text-indigo-600"
               hoverBg="hover:bg-indigo-100"
             />
             <SidebarButton 
               onClick={() => setIsCategoriaModalOpen(true)} 
               icon={<Tag size={20} />} 
-              label="Adicionar Categoria" 
+              label="Gerenciar Categoria" 
               color="text-amber-600"
               hoverBg="hover:bg-amber-100"
             />
@@ -1543,7 +1613,7 @@ CSV com colunas:
 
       {/* Main Content */}
       <main className="flex-1 ml-72 p-6 flex flex-col overflow-hidden">
-        <div className="max-w-6xl mx-auto w-full flex flex-col h-full">
+        <div className="w-[95%] mx-auto flex flex-col h-full">
           <header className="mb-6 relative flex items-center justify-center min-h-[48px] shrink-0">
             <div className="flex flex-wrap items-center gap-3 rounded-2xl bg-white p-2 px-4 shadow-soft border-soft">
               <div className="flex items-center gap-2">
@@ -1608,6 +1678,13 @@ CSV com colunas:
 
             <div className="absolute right-0 flex items-center gap-2">
               <button
+                onClick={() => setIsResetConfirmOpen(true)}
+                className="p-2 rounded-xl bg-white shadow-soft border-soft text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all"
+                title="Limpar Todos os Dados"
+              >
+                <Trash2 size={20} />
+              </button>
+              <button
                 onClick={handleDownloadBackup}
                 className="p-2 rounded-xl bg-white shadow-soft border-soft text-gray-600 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                 title="Baixar Backup (.zip)"
@@ -1633,170 +1710,175 @@ CSV com colunas:
             </div>
           </header>
 
-      {/* Yellow Balance Card */}
-      {hasRecords && (
-        <div className="mb-6 w-full lg:w-1/3 mx-auto rounded-2xl bg-yellow-100 p-4 shadow-soft border-2 border-yellow-200 shrink-0">
-          <div className="mb-2 flex items-center gap-2 text-yellow-800">
-            <TrendingUp size={20} />
-            <h2 className="text-lg font-bold">Ajustes de Saldo</h2>
-          </div>
-          {balances.length > 0 ? (
-            <ul className="space-y-1">
-              {balances.map((adj, i) => (
-                <li key={i} className="text-sm text-yellow-900 font-medium">• {adj}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-yellow-800 italic">Tudo equilibrado! Ninguém deve ninguém.</p>
-          )}
-        </div>
-      )}
+      <div className="flex-1 flex gap-6 min-h-0">
+        {/* Left Column: Balance and Person Cards */}
+        <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar pb-6">
+          <div className="min-h-full flex flex-col gap-4 justify-center">
+            {/* Yellow Balance Card */}
+            {hasRecords && (
+              <div className="w-full rounded-2xl bg-yellow-100 p-4 shadow-soft border-2 border-yellow-200 shrink-0">
+                <div className="mb-2 flex items-center gap-2 text-yellow-800">
+                  <TrendingUp size={20} />
+                  <h2 className="text-lg font-bold">Ajustes de Saldo</h2>
+                </div>
+                {balances.length > 0 ? (
+                  <ul className="space-y-1">
+                    {balances.map((adj, i) => (
+                      <li key={i} className="text-sm text-yellow-900 font-medium">• {adj}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-yellow-800 italic">Tudo equilibrado! Ninguém deve ninguém.</p>
+                )}
+              </div>
+            )}
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 shrink-0 overflow-y-auto max-h-[35vh] pr-2 custom-scrollbar">
-        {/* Person Cards */}
-        {personStats.map(p => (
-          <div 
-            key={p.id} 
-            onClick={() => {
-              setSelectedPersonId(p.id);
-              setIsPersonDetailModalOpen(true);
-            }}
-            className="rounded-2xl bg-white p-6 shadow-soft border-soft overflow-hidden relative cursor-pointer hover:shadow-lg hover:scale-[1.02] transition-all group"
-            style={{ '--hover-bg': `${p.cor}15` } as any}
-          >
-            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: `${p.cor}15` }}></div>
-            <div className="absolute top-0 left-0 w-full h-2" style={{ backgroundColor: p.cor }}></div>
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-xl font-bold" style={{ color: p.cor }}>{p.nome}</h3>
-              <div className="flex items-center gap-2">
-                <ChevronDown size={18} className="text-gray-300 group-hover:text-gray-500 transition-colors" />
-              </div>
-            </div>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-gray-500">Total Gasto:</span>
-                <span className="font-bold text-rose-600">{formatCurrency(p.totalSpent)}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-gray-500">Entrada Recebida:</span>
-                <span className="font-bold text-emerald-600">{formatCurrency(p.totalSalary)}</span>
-              </div>
+            {/* Person Cards Stack */}
+            <div className="flex flex-col gap-4">
+              {personStats.map(p => (
+                <div 
+                  key={p.id} 
+                  onClick={() => {
+                    setSelectedPersonId(p.id);
+                    setIsPersonDetailModalOpen(true);
+                  }}
+                  className="rounded-2xl bg-white p-6 shadow-soft border-soft overflow-hidden relative cursor-pointer hover:shadow-lg hover:scale-[1.02] transition-all group shrink-0"
+                  style={{ '--hover-bg': `${p.cor}15` } as any}
+                >
+                  <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: `${p.cor}15` }}></div>
+                  <div className="absolute top-0 left-0 w-full h-2" style={{ backgroundColor: p.cor }}></div>
+                  <div className="flex justify-between items-start mb-4">
+                    <h3 className="text-xl font-bold" style={{ color: p.cor }}>{p.nome}</h3>
+                    <div className="flex items-center gap-2">
+                      <ChevronDown size={18} className="text-gray-300 group-hover:text-gray-500 transition-colors" />
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500">Total Gasto:</span>
+                      <span className="font-bold text-rose-600">{formatCurrency(p.totalSpent)}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500">Entrada Recebida:</span>
+                      <span className="font-bold text-emerald-600">{formatCurrency(p.totalSalary)}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-        ))}
+        </div>
+
+        {/* Right Column: Charts */}
+        {hasRecords && (
+          <div className="flex-[2] flex flex-col min-h-0">
+            <div className="flex items-center justify-end mb-4 shrink-0">
+              <div className="flex items-center gap-1 bg-white p-1 rounded-xl shadow-soft border-soft">
+                <button
+                  onClick={() => setActiveChart('bar')}
+                  className={cn(
+                    "p-2 rounded-lg transition-all",
+                    activeChart === 'bar' ? "bg-indigo-600 text-white shadow-md" : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+                  )}
+                  title="Gráfico de Barras"
+                >
+                  <BarChartIcon size={18} />
+                </button>
+                <button
+                  onClick={() => setActiveChart('pie')}
+                  className={cn(
+                    "p-2 rounded-lg transition-all",
+                    activeChart === 'pie' ? "bg-indigo-600 text-white shadow-md" : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+                  )}
+                  title="Gráfico de Pizza"
+                >
+                  <PieChartIcon size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 relative">
+              <AnimatePresence mode="wait">
+                {activeChart === 'bar' ? (
+                  <motion.div
+                    key="bar"
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 20 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute inset-0 rounded-2xl bg-white p-4 shadow-soft border-soft flex flex-col"
+                  >
+                    <div className="flex-1 w-full min-h-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={barChartData} margin={{ top: 10, right: 130, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+                          <YAxis tickFormatter={(val) => formatCurrency(val).replace('R$', '').trim()} tick={{ fontSize: 11 }} />
+                          <Tooltip 
+                            formatter={(value: number) => [formatCurrency(value), 'Valor']}
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                            cursor={{ fill: '#f3f4f6' }}
+                          />
+                          <Legend 
+                            verticalAlign="middle" 
+                            align="right" 
+                            layout="vertical" 
+                            wrapperStyle={{ 
+                              fontSize: '15px', 
+                              fontWeight: '600', 
+                              paddingLeft: '20px',
+                              width: '140px'
+                            }} 
+                          />
+                          {pessoas.map(p => (
+                            <Bar key={p.id} dataKey={p.nome} stackId="a" fill={p.cor} radius={[0, 0, 0, 0]} />
+                          ))}
+                          <Bar dataKey="Dividir" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="pie"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute inset-0 rounded-2xl bg-white p-4 shadow-soft border-soft flex flex-col"
+                  >
+                    <div className="flex-1 w-full min-h-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            activeIndex={activePieIndex}
+                            activeShape={renderActiveShape}
+                            data={pieChartData}
+                            cx="50%"
+                            cy="45%"
+                            innerRadius="40%"
+                            outerRadius="65%"
+                            fill="#8884d8"
+                            dataKey="value"
+                            onMouseEnter={(_, index) => setActivePieIndex(index)}
+                          >
+                            {pieChartData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={PALETTES[0].colors[index % PALETTES[0].colors.length]} stroke="#fff" strokeWidth={2} />
+                            ))}
+                          </Pie>
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        )}
       </div>
 
-      {hasRecords && (
-        <div className="mt-6 flex flex-col flex-1 min-h-0">
-          <div className="flex items-center justify-between mb-4 shrink-0">
-            <h2 className="text-lg font-bold text-gray-800">
-              {activeChart === 'bar' ? 'Gastos por Dia' : 'Gastos por Categoria'}
-            </h2>
-            <div className="flex items-center gap-1 bg-white p-1 rounded-xl shadow-soft border-soft">
-              <button
-                onClick={() => setActiveChart('bar')}
-                className={cn(
-                  "p-2 rounded-lg transition-all",
-                  activeChart === 'bar' ? "bg-indigo-600 text-white shadow-md" : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
-                )}
-                title="Gráfico de Barras"
-              >
-                <BarChartIcon size={18} />
-              </button>
-              <button
-                onClick={() => setActiveChart('pie')}
-                className={cn(
-                  "p-2 rounded-lg transition-all",
-                  activeChart === 'pie' ? "bg-indigo-600 text-white shadow-md" : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
-                )}
-                title="Gráfico de Pizza"
-              >
-                <PieChartIcon size={18} />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 min-h-0 relative">
-            <AnimatePresence mode="wait">
-              {activeChart === 'bar' ? (
-                <motion.div
-                  key="bar"
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 20 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute inset-0 rounded-2xl bg-white p-4 shadow-soft border-soft flex flex-col"
-                >
-                  <div className="flex-1 w-full min-h-0">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={barChartData} margin={{ top: 10, right: 130, left: 0, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                        <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                        <YAxis tickFormatter={(val) => formatCurrency(val).replace('R$', '').trim()} tick={{ fontSize: 11 }} />
-                        <Tooltip 
-                          formatter={(value: number) => [formatCurrency(value), 'Valor']}
-                          contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                          cursor={{ fill: '#f3f4f6' }}
-                        />
-                        <Legend 
-                          verticalAlign="middle" 
-                          align="right" 
-                          layout="vertical" 
-                          wrapperStyle={{ 
-                            fontSize: '15px', 
-                            fontWeight: '600', 
-                            paddingLeft: '20px',
-                            width: '140px'
-                          }} 
-                        />
-                        {pessoas.map(p => (
-                          <Bar key={p.id} dataKey={p.nome} stackId="a" fill={p.cor} radius={[0, 0, 0, 0]} />
-                        ))}
-                        <Bar dataKey="Dividir" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="pie"
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute inset-0 rounded-2xl bg-white p-4 shadow-soft border-soft flex flex-col"
-                >
-                  <div className="flex-1 w-full min-h-0">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          activeIndex={activePieIndex}
-                          activeShape={renderActiveShape}
-                          data={pieChartData}
-                          cx="50%"
-                          cy="45%"
-                          innerRadius="40%"
-                          outerRadius="65%"
-                          fill="#8884d8"
-                          dataKey="value"
-                          onMouseEnter={(_, index) => setActivePieIndex(index)}
-                        >
-                          {pieChartData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={PALETTES[0].colors[index % PALETTES[0].colors.length]} stroke="#fff" strokeWidth={2} />
-                          ))}
-                        </Pie>
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-      )}
-
       {/* Modals */}
-      <Modal isOpen={isPessoaModalOpen} onClose={() => setIsPessoaModalOpen(false)} title="Adicionar Pessoa">
+      <Modal isOpen={isPessoaModalOpen} onClose={() => setIsPessoaModalOpen(false)} title="Gerenciar Pessoas">
         <form onSubmit={handleAddPessoa} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700">Nome</label>
@@ -1834,32 +1916,42 @@ CSV com colunas:
       <Modal 
         isOpen={isDespesaModalOpen} 
         onClose={() => setIsDespesaModalOpen(false)} 
-        title="Adicionar Saída"
+        title="Adicionar Despesa"
         className="w-[90%] h-[90%] sm:w-[90%] sm:h-[90%]"
       >
         <form onSubmit={handleAddDespesa} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700">Data</label>
+              <label className="block text-sm font-medium text-gray-700">Data da Compra</label>
               <input 
                 type="date" 
                 required
-                value={newDespesa.data}
-                onChange={e => setNewDespesa(prev => ({ ...prev, data: e.target.value }))}
+                value={newDespesa.data_compra}
+                onChange={e => setNewDespesa(prev => ({ ...prev, data_compra: e.target.value }))}
                 className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700">Valor (R$)</label>
+              <label className="block text-sm font-medium text-gray-700">Data do Pagamento</label>
               <input 
-                type="number" 
-                step="0.01"
+                type="date" 
                 required
-                value={newDespesa.valor}
-                onChange={e => setNewDespesa(prev => ({ ...prev, valor: e.target.value }))}
+                value={newDespesa.data_pagamento}
+                onChange={e => setNewDespesa(prev => ({ ...prev, data_pagamento: e.target.value }))}
                 className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Valor (R$)</label>
+            <input 
+              type="number" 
+              step="0.01"
+              required
+              value={newDespesa.valor}
+              onChange={e => setNewDespesa(prev => ({ ...prev, valor: e.target.value }))}
+              className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+            />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">Descrição</label>
@@ -1928,12 +2020,12 @@ CSV com colunas:
         <form onSubmit={handleAddSalario} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700">Data</label>
+              <label className="block text-sm font-medium text-gray-700">Data do Pagamento</label>
               <input 
                 type="date" 
                 required
-                value={newSalario.data}
-                onChange={e => setNewSalario(prev => ({ ...prev, data: e.target.value }))}
+                value={newSalario.data_pagamento}
+                onChange={e => setNewSalario(prev => ({ ...prev, data_pagamento: e.target.value }))}
                 className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
@@ -1979,7 +2071,7 @@ CSV com colunas:
         </form>
       </Modal>
 
-      <Modal isOpen={isCategoriaModalOpen} onClose={() => setIsCategoriaModalOpen(false)} title="Gerenciar Categorias">
+      <Modal isOpen={isCategoriaModalOpen} onClose={() => setIsCategoriaModalOpen(false)} title="Gerenciar Categoria">
         <div className="space-y-6">
           <form onSubmit={editingCategoria ? handleUpdateCategoria : handleAddCategoria} className="space-y-4">
             <div>
@@ -2098,20 +2190,47 @@ CSV com colunas:
         className="w-[90%] h-[90%] sm:w-[90%] sm:h-[90%]"
       >
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Pessoa de Referência</label>
-            <select 
-              required
-              value={importPessoaId}
-              onChange={e => setImportPessoaId(e.target.value)}
-              className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="">Selecione...</option>
-              {pessoas.map(p => (
-                <option key={p.id} value={p.id}>{p.nome}</option>
-              ))}
-            </select>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Pessoa de Referência</label>
+              <select 
+                required
+                value={importPessoaId}
+                onChange={e => setImportPessoaId(e.target.value)}
+                className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">Selecione...</option>
+                {pessoas.map(p => (
+                  <option key={p.id} value={p.id}>{p.nome}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Fonte dos Dados</label>
+              <select 
+                value={importSource}
+                onChange={e => setImportSource(e.target.value as 'extrato' | 'cartao')}
+                className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="extrato">Extrato Bancário</option>
+                <option value="cartao">Cartão de Crédito</option>
+              </select>
+            </div>
           </div>
+          
+          {importSource === 'cartao' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Data de Pagamento (Fatura)</label>
+              <input 
+                type="date" 
+                value={globalPaymentDate}
+                onChange={e => setGlobalPaymentDate(e.target.value)}
+                className="mt-1 w-full rounded-xl border-gray-200 bg-gray-50 p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <p className="mt-1 text-xs text-gray-500">Esta data será aplicada a todos os itens da fatura.</p>
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-gray-700">Arquivo CSV</label>
             <input 
@@ -2213,8 +2332,10 @@ CSV com colunas:
                 <table className="w-full text-left text-sm">
                   <thead className="sticky top-0 bg-gray-100 text-gray-600 z-10">
                     <tr>
-                      <th className="px-4 py-3 font-semibold">Data</th>
+                      <th className="px-4 py-3 font-semibold">Data Compra</th>
+                      <th className="px-4 py-3 font-semibold">Data Pagto</th>
                       <th className="px-4 py-3 font-semibold">Descrição</th>
+                      <th className="px-4 py-3 font-semibold">Categoria</th>
                       <th className="px-4 py-3 font-semibold">Valor</th>
                       <th className="px-4 py-3 font-semibold">Tipo</th>
                     </tr>
@@ -2223,11 +2344,45 @@ CSV com colunas:
                     {selectedPersonDetails.movements.length > 0 ? (
                       selectedPersonDetails.movements.map((m: any) => (
                         <tr key={m.id} className="hover:bg-gray-50 transition-colors group">
-                          <td className="px-4 py-3 whitespace-nowrap">{m.formattedDate}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-xs">{m.formattedCompraDate}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-xs font-medium text-indigo-600">{m.formattedDate}</td>
                           <td className="px-4 py-3">
                             <div className="font-medium">{m.descricao}</div>
-                            {m.categoria_nome && (
-                              <div className="text-xs text-gray-400">{m.categoria_nome}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            {m.tipo === 'Saída' ? (
+                              editingRecordCategory?.id === m.id ? (
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    autoFocus
+                                    value={editingRecordCategory.categoryId}
+                                    onChange={e => setEditingRecordCategory({ ...editingRecordCategory, categoryId: parseInt(e.target.value) })}
+                                    onBlur={() => handleUpdateCategory(m.id, editingRecordCategory.categoryId)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') handleUpdateCategory(m.id, editingRecordCategory.categoryId);
+                                      if (e.key === 'Escape') setEditingRecordCategory(null);
+                                    }}
+                                    className="rounded-lg border-gray-200 bg-gray-50 p-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                                  >
+                                    {sortedCategorias.map(cat => (
+                                      <option key={cat.id} value={cat.id}>{cat.nome}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 group/cat">
+                                  <span className="text-xs text-gray-600">{m.categoria_nome || 'Sem Categoria'}</span>
+                                  <button
+                                    onClick={() => setEditingRecordCategory({ id: m.id, categoryId: m.categoria_id })}
+                                    className="p-1 text-gray-400 hover:text-indigo-600 opacity-0 group-hover/cat:opacity-100 transition-opacity"
+                                    title="Editar Categoria"
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
+                                </div>
+                              )
+                            ) : (
+                              <span className="text-xs text-gray-400">-</span>
                             )}
                           </td>
                           <td className={cn(
@@ -2307,7 +2462,12 @@ CSV com colunas:
         defaultFilenamePrefix={`Resumo_${(selectedPersonDetails?.person.nome || '').replace(/\s+/g, '_')}`}
       />
 
-      <Modal isOpen={isReviewModalOpen} onClose={() => setIsReviewModalOpen(false)} title="Revisar Importação">
+      <Modal 
+        isOpen={isReviewModalOpen} 
+        onClose={() => setIsReviewModalOpen(false)} 
+        title="Revisar Importação"
+        className="w-[90%] h-[90%] sm:w-[90%] sm:h-[90%]"
+      >
         <div className="flex flex-col h-full space-y-4">
           <div className="sticky top-[-24px] z-20 bg-white/95 backdrop-blur-sm pb-4 pt-2 -mx-6 px-6 border-b border-gray-50 space-y-3">
             <div className="flex items-center justify-between gap-4">
@@ -2362,7 +2522,8 @@ CSV com colunas:
             <table className="w-full text-left text-sm">
               <thead className="text-gray-600">
                 <tr>
-                  <th className="sticky top-0 px-4 py-3 font-semibold bg-gray-100 z-10">Data</th>
+                  <th className="sticky top-0 px-4 py-3 font-semibold bg-gray-100 z-10">Data Compra</th>
+                  <th className="sticky top-0 px-4 py-3 font-semibold bg-gray-100 z-10">Data Pagto</th>
                   <th className="sticky top-0 px-4 py-3 font-semibold bg-gray-100 z-10">Descrição</th>
                   <th className="sticky top-0 px-4 py-3 font-semibold bg-gray-100 z-10">Categoria</th>
                   <th className="sticky top-0 px-4 py-3 font-semibold bg-gray-100 z-10">Valor</th>
@@ -2376,18 +2537,21 @@ CSV com colunas:
                   .filter(item => {
                     if (!reviewSearchTerm) return true;
                     const term = reviewSearchTerm.toLowerCase();
-                    const formattedDate = format(parseISO(item.data), 'dd/MM/yyyy');
+                    const formattedDateCompra = format(parseISO(item.data_compra), 'dd/MM/yyyy');
+                    const formattedDatePagto = format(parseISO(item.data_pagamento), 'dd/MM/yyyy');
                     return (
                       item.descricao.toLowerCase().includes(term) ||
                       item.categoria.toLowerCase().includes(term) ||
                       item.valor.toString().includes(term) ||
                       item.tipo.toLowerCase().includes(term) ||
-                      formattedDate.includes(term)
+                      formattedDateCompra.includes(term) ||
+                      formattedDatePagto.includes(term)
                     );
                   })
                   .map((item, idx) => (
                     <tr key={item.id} className="hover:bg-gray-50 transition-colors group">
-                    <td className="px-4 py-3 whitespace-nowrap">{format(parseISO(item.data), 'dd/MM/yyyy')}</td>
+                    <td className="px-4 py-3 whitespace-nowrap text-xs">{format(parseISO(item.data_compra), 'dd/MM/yyyy')}</td>
+                    <td className="px-4 py-3 whitespace-nowrap text-xs font-medium text-indigo-600">{format(parseISO(item.data_pagamento), 'dd/MM/yyyy')}</td>
                     <td className="px-4 py-3">{item.descricao}</td>
                     <td className="px-4 py-3">
                       <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
@@ -2478,6 +2642,17 @@ CSV com colunas:
         message={`ATENÇÃO: Esta ação é irreversível. Ao excluir ${personToDelete?.nome}, TODOS os registros de despesas e entradas associados a esta pessoa serão apagados do sistema para sempre. Deseja prosseguir?`}
         confirmLabel="Sim, Excluir Tudo"
         cancelLabel="Não, Manter Dados"
+        type="danger"
+      />
+
+      <ConfirmModal
+        isOpen={isResetConfirmOpen}
+        onClose={() => setIsResetConfirmOpen(false)}
+        onConfirm={handleResetData}
+        title="Limpar Todos os Dados?"
+        message="Esta ação irá excluir permanentemente todas as pessoas, categorias, despesas e entradas. Esta ação não pode ser desfeita. Deseja continuar?"
+        confirmLabel="Sim, Limpar Tudo"
+        cancelLabel="Cancelar"
         type="danger"
       />
 
