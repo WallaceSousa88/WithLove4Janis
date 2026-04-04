@@ -42,18 +42,9 @@ const renderActiveShape = (props: any) => {
         cx={cx}
         cy={cy}
         innerRadius={innerRadius}
-        outerRadius={outerRadius}
+        outerRadius={outerRadius + 4}
         startAngle={startAngle}
         endAngle={endAngle}
-        fill={fill}
-      />
-      <Sector
-        cx={cx}
-        cy={cy}
-        startAngle={startAngle}
-        endAngle={endAngle}
-        innerRadius={outerRadius + 6}
-        outerRadius={outerRadius + 10}
         fill={fill}
       />
       <text 
@@ -62,9 +53,9 @@ const renderActiveShape = (props: any) => {
         textAnchor="middle" 
         dominantBaseline="central"
       >
-        <tspan x={cx} dy="-1.4em" fontSize={11} fill="#6b7280" fontWeight="500">{payload.name}</tspan>
-        <tspan x={cx} dy="1.4em" fontSize={16} fill="#111827" fontWeight="700">{formatCurrency(value)}</tspan>
-        <tspan x={cx} dy="1.4em" fontSize={11} fill="#6b7280" fontWeight="500">{(percent * 100).toFixed(0)}%</tspan>
+        <tspan x={cx} dy="-1.2em" fontSize={12} fill="#6b7280" fontWeight="500">{payload.name}</tspan>
+        <tspan x={cx} dy="1.2em" fontSize={18} fill="#111827" fontWeight="700">{formatCurrency(value)}</tspan>
+        <tspan x={cx} dy="1.2em" fontSize={12} fill="#6b7280" fontWeight="500">{(percent * 100).toFixed(0)}%</tspan>
       </text>
     </g>
   );
@@ -110,6 +101,7 @@ export default function App() {
 
   const [activePieIndex, setActivePieIndex] = useState(0);
   const [activeChart, setActiveChart] = useState<'bar' | 'pie'>('bar');
+  const [chartPersonFilter, setChartPersonFilter] = useState<number | -1>(-1);
 
   const [isPersonDetailModalOpen, setIsPersonDetailModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -576,7 +568,9 @@ CSV com colunas:
           displayData: d.data_pagamento,
           data_compra: d.data_compra || d.data_pagamento,
           formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data_pagamento,
-          formattedCompraDate: d.data_compra ? format(parseISO(d.data_compra), 'dd/MM/yyyy') : (isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data_pagamento)
+          formattedCompraDate: d.data_compra ? format(parseISO(d.data_compra), 'dd/MM/yyyy') : (isValidDate ? format(dateObj, 'dd/MM/yyyy') : d.data_pagamento),
+          monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
+          monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : ''
         };
       }),
       ...pSalarios.map(s => {
@@ -589,7 +583,9 @@ CSV com colunas:
           displayData: s.data_pagamento,
           data_compra: s.data_pagamento,
           formattedDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data_pagamento,
-          formattedCompraDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data_pagamento
+          formattedCompraDate: isValidDate ? format(dateObj, 'dd/MM/yyyy') : s.data_pagamento,
+          monthName: isValidDate ? format(dateObj, 'MMMM', { locale: ptBR }) : '',
+          monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : ''
         };
       })
     ].sort((a, b) => b.displayData.localeCompare(a.displayData));
@@ -604,8 +600,20 @@ CSV com colunas:
         const valorFixed = m.valor.toFixed(2);
         const valorFormatted = formatCurrency(m.valor).toLowerCase();
 
+        // Resolve destino name for filtering
+        let destinoName = '-';
+        if (m.tipo === 'Saída') {
+          if (m.destino === 'Dividir' || m.destino === 'Dividido') {
+            destinoName = 'Dividir';
+          } else {
+            const p = pessoas.find(p => p.id === Number(m.destino));
+            destinoName = p ? p.nome : (m.destino || '-');
+          }
+        }
+
         return normalize(m.descricao).includes(term) ||
           (m.categoria_nome && normalize(m.categoria_nome).includes(term)) ||
+          normalize(destinoName).includes(term) ||
           valorStr.includes(term) ||
           valorStr.includes(numericTerm) ||
           valorFixed.includes(term) ||
@@ -615,7 +623,9 @@ CSV com colunas:
           m.formattedDate.includes(term) ||
           (m.data_compra && m.data_compra.includes(term)) ||
           (m.formattedCompraDate && m.formattedCompraDate.includes(term)) ||
-          normalize(m.tipo).includes(term);
+          normalize(m.tipo).includes(term) ||
+          normalize(m.monthName).includes(term) ||
+          normalize(m.monthNameShort).includes(term);
       });
     }
 
@@ -636,9 +646,17 @@ CSV com colunas:
   }, [selectedPersonId, pessoas, filteredDespesas, filteredSalarios, personSearchTerm]);
 
   const barChartData = useMemo(() => {
+    const chartDespesas = chartPersonFilter === -1 
+      ? filteredDespesas 
+      : filteredDespesas.filter(d => d.origem_id === chartPersonFilter);
+    
+    const chartSalarios = chartPersonFilter === -1
+      ? filteredSalarios
+      : filteredSalarios.filter(s => s.recebedor_id === chartPersonFilter);
+
     const items = [
-      ...filteredDespesas.map(d => ({ ...d, data: d.data_pagamento })),
-      ...filteredSalarios.map(s => ({ ...s, data: s.data_pagamento }))
+      ...chartDespesas.map(d => ({ ...d, data: d.data_pagamento })),
+      ...chartSalarios.map(s => ({ ...s, data: s.data_pagamento }))
     ];
     if (items.length === 0) return [];
 
@@ -675,7 +693,7 @@ CSV com colunas:
       const days = eachDayOfInterval({ start, end });
       return days.map(day => {
         const dayStr = format(day, 'yyyy-MM-dd');
-        const dayDespesas = filteredDespesas.filter(d => d.data_pagamento === dayStr);
+        const dayDespesas = chartDespesas.filter(d => d.data_pagamento === dayStr);
         
         const data: any = { day: format(day, 'dd/MM') };
         pessoas.forEach(p => {
@@ -693,7 +711,7 @@ CSV com colunas:
       // Show months
       const months = eachMonthOfInterval({ start, end });
       return months.map(month => {
-        const monthDespesas = filteredDespesas.filter(d => isSameMonth(parseISO(d.data_pagamento), month));
+        const monthDespesas = chartDespesas.filter(d => isSameMonth(parseISO(d.data_pagamento), month));
         const data: any = { day: format(month, 'MMM/yy', { locale: ptBR }) };
         pessoas.forEach(p => {
           data[p.nome] = monthDespesas
@@ -709,7 +727,7 @@ CSV com colunas:
       // Show years
       const years = eachYearOfInterval({ start, end });
       return years.map(year => {
-        const yearDespesas = filteredDespesas.filter(d => isSameYear(parseISO(d.data_pagamento), year));
+        const yearDespesas = chartDespesas.filter(d => isSameYear(parseISO(d.data_pagamento), year));
         const data: any = { day: format(year, 'yyyy') };
         pessoas.forEach(p => {
           data[p.nome] = yearDespesas
@@ -722,18 +740,22 @@ CSV com colunas:
         return data;
       });
     }
-  }, [pessoas, filteredDespesas, filteredSalarios, startDate, endDate]);
+  }, [pessoas, filteredDespesas, filteredSalarios, startDate, endDate, chartPersonFilter]);
 
   const pieChartData = useMemo(() => {
+    const chartDespesas = chartPersonFilter === -1 
+      ? filteredDespesas 
+      : filteredDespesas.filter(d => d.origem_id === chartPersonFilter);
+
     const catTotals = categorias.map(c => {
-      const total = filteredDespesas
+      const total = chartDespesas
         .filter(d => d.categoria_id === c.id)
         .reduce((sum, d) => sum + d.valor, 0);
       return { name: c.nome, value: total };
     }).filter(c => c.value > 0).sort((a, b) => b.value - a.value);
 
     return catTotals;
-  }, [categorias, filteredDespesas]);
+  }, [categorias, filteredDespesas, chartPersonFilter]);
 
   const allMovements = useMemo(() => {
     // Pre-index auditLogs for faster lookup of initial values
@@ -1317,8 +1339,21 @@ CSV com colunas:
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target?.result as string;
-      const lines = text.split('\n').filter(line => line.trim() !== '');
+      const buffer = event.target?.result as ArrayBuffer;
+      
+      // Try UTF-8 first
+      let decoder = new TextDecoder('utf-8');
+      let text = decoder.decode(buffer);
+      
+      // If we see the replacement character or common corruption for "Saída", try ISO-8859-1
+      if (text.includes('') || text.includes('\ufffd')) {
+        decoder = new TextDecoder('iso-8859-1');
+        text = decoder.decode(buffer);
+      }
+
+      const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
+      if (lines.length === 0) return;
+
       const startIdx = lines[0].toLowerCase().includes('data') ? 1 : 0;
 
       const items: any[] = [];
@@ -1326,35 +1361,46 @@ CSV com colunas:
         const parts = lines[i].split(';');
         if (parts.length < 5) continue;
         
-        const [dataStr, descricao, categoriaNome, valorStr, tipo] = parts;
-        if (!dataStr || !valorStr || !tipo) continue;
+        const [dataStr, descricao, categoriaNome, valorStr, tipoRaw] = parts;
+        if (!dataStr || !valorStr || !tipoRaw) continue;
 
-        const dateParts = dataStr.split('/');
+        const dateParts = dataStr.trim().split('/');
         if (dateParts.length !== 3) continue;
         const [day, month, year] = dateParts;
-        const formattedDate = `${year}-${month}-${day}`;
+        const formattedDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
 
-        const valor = parseFloat(valorStr.replace(',', '.'));
+        // Robust value parsing for Brazilian format (1.234,56 or 1234,56 or 1234.56)
+        let cleanValor = valorStr.trim().replace(/[R$\s]/g, '');
+        if (cleanValor.includes(',') && cleanValor.includes('.')) {
+          // Likely 1.234,56 -> remove dot, replace comma with dot
+          cleanValor = cleanValor.replace(/\./g, '').replace(',', '.');
+        } else if (cleanValor.includes(',')) {
+          // Likely 123,45 -> replace comma with dot
+          cleanValor = cleanValor.replace(',', '.');
+        }
+        
+        const valor = parseFloat(cleanValor);
         if (isNaN(valor)) continue;
+
+        const tipo = tipoRaw.trim().toLowerCase().includes('entrada') ? 'Entrada' : 'Saída';
 
         items.push({
           id: Math.random().toString(36).substr(2, 9),
           data_compra: formattedDate,
           data_pagamento: importSource === 'extrato' ? formattedDate : globalPaymentDate,
           descricao: descricao.trim(),
-          categoria: categoriaNome.trim(),
+          categoria: categoriaNome.trim() || 'Geral',
           valor,
-          tipo: tipo.trim().toLowerCase() === 'entrada' ? 'Entrada' : 'Saída',
-          destino: tipo.trim().toLowerCase() === 'entrada' ? importPessoaId : '' // Entradas are for the person, Saídas need review
+          tipo,
+          destino: tipo === 'Entrada' ? importPessoaId : '' 
         });
       }
       setReviewItems(items);
       setIsImportModalOpen(false);
       setIsReviewModalOpen(true);
-      // Reset input
       e.target.value = '';
     };
-    reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
   };
 
   const handleConfirmImport = async () => {
@@ -1367,14 +1413,17 @@ CSV com colunas:
     setIsLoading(true);
     setLoadingMessage('Processando importação...');
     try {
+      // Local cache for categories to handle new ones in the same batch
+      const categoryCache = new Map<string, number>();
+      categorias.forEach(c => categoryCache.set(c.nome.toLowerCase(), c.id));
+
       // Process all items
       for (const item of reviewItems) {
-        // Handle Category creation if needed
         let categoriaId: number | null = null;
-        const existingCat = categorias.find(c => c.nome.toLowerCase() === item.categoria.toLowerCase());
+        const catNameLower = item.categoria.toLowerCase();
         
-        if (existingCat) {
-          categoriaId = existingCat.id;
+        if (categoryCache.has(catNameLower)) {
+          categoriaId = categoryCache.get(catNameLower)!;
         } else {
           const res = await fetch('/api/categorias', {
             method: 'POST',
@@ -1384,8 +1433,7 @@ CSV com colunas:
           const data = await res.json();
           if (data.id) {
             categoriaId = data.id;
-            // Update local state to avoid duplicate creation
-            setCategorias(prev => [...prev, { id: data.id, nome: item.categoria }]);
+            categoryCache.set(catNameLower, data.id);
           }
         }
 
@@ -1403,7 +1451,7 @@ CSV com colunas:
           if (!res.ok) {
             const data = await res.json();
             if (res.status === 400 && data.error?.includes('duplicado')) {
-              continue; // Skip duplicates during bulk import
+              continue; 
             }
             throw new Error(data.error || 'Erro ao salvar entrada');
           }
@@ -1419,14 +1467,12 @@ CSV com colunas:
                 descricao: item.descricao,
                 origem_id: parseInt(importPessoaId),
                 destino: item.destino,
-                categoria_id: categoriaId
+                categoria_id: categoriaId,
+                ignoreDuplicates: true // Allow identical transactions in the same import
               }),
             });
             if (!res.ok) {
               const data = await res.json();
-              if (res.status === 400 && data.error?.includes('duplicada')) {
-                continue; // Skip duplicates during bulk import
-              }
               throw new Error(data.error || 'Erro ao salvar despesa');
             }
           }
@@ -1439,6 +1485,7 @@ CSV com colunas:
       setTimeout(() => setToast(null), 3000);
       fetchData();
     } catch (err) {
+      console.error('Import error:', err);
       setError('Erro durante a importação. Algumas transações podem não ter sido salvas.');
     } finally {
       setIsLoading(false);
@@ -1456,6 +1503,7 @@ CSV com colunas:
     if (options.columns.includes('date_compra')) columns.push({ header: 'Data Compra', key: 'date_compra', width: 15 });
     if (options.columns.includes('description')) columns.push({ header: 'Descrição', key: 'description', width: 35 });
     if (options.columns.includes('category')) columns.push({ header: 'Categoria', key: 'category', width: 20 });
+    if (options.columns.includes('destino')) columns.push({ header: 'Destino', key: 'destino', width: 20 });
     if (options.columns.includes('value')) columns.push({ header: 'Valor', key: 'value', width: 15 });
     if (options.columns.includes('type')) columns.push({ header: 'Tipo', key: 'type', width: 15 });
     worksheet.columns = columns;
@@ -1466,6 +1514,12 @@ CSV com colunas:
       if (options.columns.includes('date_compra')) row['date_compra'] = m.formattedCompraDate;
       if (options.columns.includes('description')) row['description'] = m.descricao;
       if (options.columns.includes('category')) row['category'] = m.categoria_nome || '-';
+      if (options.columns.includes('destino')) {
+        row['destino'] = m.tipo === 'Saída' ? (
+          (m.destino === 'Dividir' || m.destino === 'Dividido') ? 'Dividir' : 
+          (pessoas.find(p => p.id === Number(m.destino))?.nome || m.destino || '-')
+        ) : '-';
+      }
       if (options.columns.includes('value')) row['value'] = m.valor;
       if (options.columns.includes('type')) row['type'] = m.tipo;
       worksheet.addRow(row);
@@ -1772,7 +1826,21 @@ CSV com colunas:
         {/* Right Column: Charts */}
         {hasRecords && (
           <div className="flex-[2] flex flex-col min-h-0">
-            <div className="flex items-center justify-end mb-4 shrink-0">
+            <div className="flex items-center justify-between mb-4 shrink-0">
+              <div className="flex items-center gap-2">
+                <Users size={16} className="text-gray-400" />
+                <select
+                  value={chartPersonFilter}
+                  onChange={(e) => setChartPersonFilter(parseInt(e.target.value))}
+                  className="rounded-xl border-soft bg-white px-3 py-1.5 text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-indigo-500 shadow-soft"
+                >
+                  <option value={-1}>Todas as Pessoas</option>
+                  {pessoas.map(p => (
+                    <option key={p.id} value={p.id}>{p.nome}</option>
+                  ))}
+                </select>
+              </div>
+
               <div className="flex items-center gap-1 bg-white p-1 rounded-xl shadow-soft border-soft">
                 <button
                   onClick={() => setActiveChart('bar')}
@@ -1809,33 +1877,39 @@ CSV com colunas:
                     className="absolute inset-0 rounded-2xl bg-white p-4 shadow-soft border-soft flex flex-col"
                   >
                     <div className="flex-1 w-full min-h-0">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={barChartData} margin={{ top: 10, right: 130, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                          <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                          <YAxis tickFormatter={(val) => formatCurrency(val).replace('R$', '').trim()} tick={{ fontSize: 11 }} />
-                          <Tooltip 
-                            formatter={(value: number) => [formatCurrency(value), 'Valor']}
-                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                            cursor={{ fill: '#f3f4f6' }}
-                          />
-                          <Legend 
-                            verticalAlign="middle" 
-                            align="right" 
-                            layout="vertical" 
-                            wrapperStyle={{ 
-                              fontSize: '15px', 
-                              fontWeight: '600', 
-                              paddingLeft: '20px',
-                              width: '140px'
-                            }} 
-                          />
-                          {pessoas.map(p => (
-                            <Bar key={p.id} dataKey={p.nome} stackId="a" fill={p.cor} radius={[0, 0, 0, 0]} />
-                          ))}
-                          <Bar dataKey="Dividir" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
+                      {barChartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={barChartData} margin={{ top: 10, right: 130, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                            <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+                            <YAxis tickFormatter={(val) => formatCurrency(val).replace('R$', '').trim()} tick={{ fontSize: 11 }} />
+                            <Tooltip 
+                              formatter={(value: number) => [formatCurrency(value), 'Valor']}
+                              contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                              cursor={{ fill: '#f3f4f6' }}
+                            />
+                            <Legend 
+                              verticalAlign="middle" 
+                              align="right" 
+                              layout="vertical" 
+                              wrapperStyle={{ 
+                                fontSize: '15px', 
+                                fontWeight: '600', 
+                                paddingLeft: '20px',
+                                width: '140px'
+                              }} 
+                            />
+                            {pessoas.map(p => (
+                              <Bar key={p.id} dataKey={p.nome} stackId="a" fill={p.cor} radius={[0, 0, 0, 0]} />
+                            ))}
+                            <Bar dataKey="Dividir" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-gray-400 font-medium">
+                          Nenhum dado para este filtro
+                        </div>
+                      )}
                     </div>
                   </motion.div>
                 ) : (
@@ -1845,29 +1919,35 @@ CSV com colunas:
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -20 }}
                     transition={{ duration: 0.2 }}
-                    className="absolute inset-0 rounded-2xl bg-white p-4 shadow-soft border-soft flex flex-col"
+                    className="absolute inset-0 rounded-2xl bg-white p-0 shadow-soft border-soft flex flex-col"
                   >
                     <div className="flex-1 w-full min-h-0">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            activeIndex={activePieIndex}
-                            activeShape={renderActiveShape}
-                            data={pieChartData}
-                            cx="50%"
-                            cy="45%"
-                            innerRadius="40%"
-                            outerRadius="65%"
-                            fill="#8884d8"
-                            dataKey="value"
-                            onMouseEnter={(_, index) => setActivePieIndex(index)}
-                          >
-                            {pieChartData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={PALETTES[0].colors[index % PALETTES[0].colors.length]} stroke="#fff" strokeWidth={2} />
-                            ))}
-                          </Pie>
-                        </PieChart>
-                      </ResponsiveContainer>
+                      {pieChartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                            <Pie
+                              activeIndex={activePieIndex}
+                              activeShape={renderActiveShape}
+                              data={pieChartData}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius="65%"
+                              outerRadius="95%"
+                              fill="#8884d8"
+                              dataKey="value"
+                              onMouseEnter={(_, index) => setActivePieIndex(index)}
+                            >
+                              {pieChartData.map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={PALETTES[0].colors[index % PALETTES[0].colors.length]} stroke="#fff" strokeWidth={2} />
+                              ))}
+                            </Pie>
+                          </PieChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-gray-400 font-medium">
+                          Nenhum dado para este filtro
+                        </div>
+                      )}
                     </div>
                   </motion.div>
                 )}
@@ -2336,6 +2416,7 @@ CSV com colunas:
                       <th className="px-4 py-3 font-semibold">Data Pagto</th>
                       <th className="px-4 py-3 font-semibold">Descrição</th>
                       <th className="px-4 py-3 font-semibold">Categoria</th>
+                      <th className="px-4 py-3 font-semibold">Destino</th>
                       <th className="px-4 py-3 font-semibold">Valor</th>
                       <th className="px-4 py-3 font-semibold">Tipo</th>
                     </tr>
@@ -2384,6 +2465,14 @@ CSV com colunas:
                             ) : (
                               <span className="text-xs text-gray-400">-</span>
                             )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="text-xs text-gray-600">
+                              {m.tipo === 'Saída' ? (
+                                (m.destino === 'Dividir' || m.destino === 'Dividido') ? 'Dividir' : 
+                                (pessoas.find(p => p.id === Number(m.destino))?.nome || m.destino || '-')
+                              ) : '-'}
+                            </span>
                           </td>
                           <td className={cn(
                             "px-4 py-3 font-medium whitespace-nowrap",
@@ -2474,7 +2563,7 @@ CSV com colunas:
               <p className="text-sm text-gray-600">
                 Revise as transações abaixo e selecione o <strong>Destino</strong> para cada despesa.
               </p>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center flex-wrap gap-2">
                 <button
                   onClick={() => {
                     const newItems = reviewItems.map(item => ({
@@ -2489,6 +2578,26 @@ CSV com colunas:
                   <Layers size={14} />
                   Dividir Todos
                 </button>
+
+                {pessoas.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      const newItems = reviewItems.map(item => ({
+                        ...item,
+                        destino: item.tipo === 'Saída' ? p.id.toString() : item.destino
+                      }));
+                      setReviewItems(newItems);
+                    }}
+                    style={{ color: p.cor, backgroundColor: `${p.cor}15` }}
+                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all active:scale-95 hover:opacity-80"
+                    title={`Marcar todas as saídas para ${p.nome}`}
+                  >
+                    <Users size={14} />
+                    {p.nome}
+                  </button>
+                ))}
+
                 <button
                   onClick={() => {
                     const newItems = reviewItems.map(item => ({
@@ -2537,15 +2646,33 @@ CSV com colunas:
                   .filter(item => {
                     if (!reviewSearchTerm) return true;
                     const term = reviewSearchTerm.toLowerCase();
-                    const formattedDateCompra = format(parseISO(item.data_compra), 'dd/MM/yyyy');
-                    const formattedDatePagto = format(parseISO(item.data_pagamento), 'dd/MM/yyyy');
+                    const dateCompraObj = parseISO(item.data_compra);
+                    const datePagtoObj = parseISO(item.data_pagamento);
+                    const formattedDateCompra = format(dateCompraObj, 'dd/MM/yyyy');
+                    const formattedDatePagto = format(datePagtoObj, 'dd/MM/yyyy');
+                    const monthName = format(datePagtoObj, 'MMMM', { locale: ptBR }).toLowerCase();
+                    const monthNameShort = format(datePagtoObj, 'MMM', { locale: ptBR }).toLowerCase();
+                    
+                    let destinoName = '';
+                    if (item.tipo === 'Saída') {
+                      if (item.destino === 'Dividir') {
+                        destinoName = 'Dividir';
+                      } else if (item.destino) {
+                        const p = pessoas.find(p => p.id === Number(item.destino));
+                        destinoName = p ? p.nome : item.destino;
+                      }
+                    }
+
                     return (
                       item.descricao.toLowerCase().includes(term) ||
                       item.categoria.toLowerCase().includes(term) ||
+                      destinoName.toLowerCase().includes(term) ||
                       item.valor.toString().includes(term) ||
                       item.tipo.toLowerCase().includes(term) ||
                       formattedDateCompra.includes(term) ||
-                      formattedDatePagto.includes(term)
+                      formattedDatePagto.includes(term) ||
+                      monthName.includes(term) ||
+                      monthNameShort.includes(term)
                     );
                   })
                   .map((item, idx) => (
