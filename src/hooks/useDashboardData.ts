@@ -21,6 +21,7 @@ interface DashboardDataProps {
   personSearchTerm: string;
   logSearchTerm: string;
   selectedPersonId: number | null;
+  summarySort: { key: string; direction: 'asc' | 'desc' } | null;
 }
 
 const formatCurrency = (value: number) => {
@@ -44,6 +45,7 @@ export const useDashboardData = ({
   personSearchTerm,
   logSearchTerm,
   selectedPersonId,
+  summarySort,
 }: DashboardDataProps) => {
 
   const filteredDespesas = useMemo(() => {
@@ -195,7 +197,61 @@ export const useDashboardData = ({
           monthNameShort: isValidDate ? format(dateObj, 'MMM', { locale: ptBR }) : ''
         };
       })
-    ].sort((a, b) => b.displayData.localeCompare(a.displayData));
+    ];
+
+    if (summarySort) {
+      const { key, direction } = summarySort;
+      movements.sort((a, b) => {
+        let valA: any = '';
+        let valB: any = '';
+
+        switch (key) {
+          case 'data_compra':
+            valA = a.data_compra || a.data_pagamento || '';
+            valB = b.data_compra || b.data_pagamento || '';
+            break;
+          case 'data_pagto':
+            valA = a.data_pagamento || '';
+            valB = b.data_pagamento || '';
+            break;
+          case 'descricao':
+            valA = (a.descricao || '').toLowerCase();
+            valB = (b.descricao || '').toLowerCase();
+            break;
+          case 'categoria':
+            valA = (a.categoria_nome || (a.tipo === 'Entrada' ? 'Entrada' : '')).toLowerCase();
+            valB = (b.categoria_nome || (b.tipo === 'Entrada' ? 'Entrada' : '')).toLowerCase();
+            break;
+          case 'destino':
+            const getDestName = (m: any) => {
+              if (m.tipo === 'Entrada') return '-';
+              if (m.destino === 'Dividir' || m.destino === 'Dividido') return 'Dividir';
+              const p = pessoas.find(p => p.id === Number(m.destino));
+              return p ? p.nome : (m.destino || '-');
+            };
+            valA = getDestName(a).toLowerCase();
+            valB = getDestName(b).toLowerCase();
+            break;
+          case 'valor':
+            valA = a.valor;
+            valB = b.valor;
+            break;
+          case 'tipo':
+            valA = a.tipo.toLowerCase();
+            valB = b.tipo.toLowerCase();
+            break;
+          default:
+            valA = a.displayData;
+            valB = b.displayData;
+        }
+
+        if (valA < valB) return direction === 'asc' ? -1 : 1;
+        if (valA > valB) return direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+    } else {
+      movements.sort((a, b) => b.displayData.localeCompare(a.displayData));
+    }
 
     if (personSearchTerm) {
       const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -249,7 +305,7 @@ export const useDashboardData = ({
       totalSalary,
       net: totalSalary - totalSpent
     };
-  }, [selectedPersonId, pessoas, filteredDespesas, filteredSalarios, personSearchTerm]);
+  }, [selectedPersonId, pessoas, filteredDespesas, filteredSalarios, personSearchTerm, summarySort]);
 
   const barChartData = useMemo(() => {
     const chartDespesas = chartPersonFilter === -1 

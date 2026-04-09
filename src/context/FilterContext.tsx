@@ -26,6 +26,8 @@ interface FilterContextType {
   setImportPessoaId: (id: string) => void;
   logSort: { key: string; direction: 'asc' | 'desc' } | null;
   setLogSort: (sort: { key: string; direction: 'asc' | 'desc' } | null) => void;
+  summarySort: { key: string; direction: 'asc' | 'desc' } | null;
+  setSummarySort: (sort: { key: string; direction: 'asc' | 'desc' } | null) => void;
   reviewSearchTerm: string;
   setReviewSearchTerm: (term: string) => void;
 
@@ -51,6 +53,7 @@ export const FilterProvider = ({ children }: { children: ReactNode }) => {
 
   const [importPessoaId, setImportPessoaId] = useState<string>('');
   const [logSort, setLogSort] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
+  const [summarySort, setSummarySort] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
   const [reviewSearchTerm, setReviewSearchTerm] = useState('');
 
   const [toast, setToast] = useState<string | null>(null);
@@ -77,6 +80,7 @@ export const FilterProvider = ({ children }: { children: ReactNode }) => {
       isPersonDetailModalOpen, setIsPersonDetailModalOpen,
       importPessoaId, setImportPessoaId,
       logSort, setLogSort,
+      summarySort, setSummarySort,
       reviewSearchTerm, setReviewSearchTerm,
       toast, setToast,
       error, setError
